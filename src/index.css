@@ -1,0 +1,87 @@
+@import "tailwindcss";
+@import "@xyflow/react/dist/style.css";
+
+@theme {
+  --font-display: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-sans: "DM Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+@layer base {
+  :root {
+    color-scheme: light;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    background-color: #ffffff;
+  }
+
+  h1, h2, h3, h4, .font-display {
+    font-family: var(--font-display);
+  }
+
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* React Flow polish matching reference aesthetics */
+.react-flow {
+  --xy-background-color: #ffffff;
+  --xy-background-color-default: #ffffff;
+  background-color: #ffffff;
+}
+
+.react-flow__background {
+  background-color: #ffffff;
+}
+
+.react-flow__node {
+  border: none;
+  background: transparent;
+  padding: 0;
+}
+
+.react-flow__handle {
+  width: 10px;
+  height: 10px;
+  border-radius: 9999px;
+  border: 1.5px solid #cbd5e1;
+  background: #ffffff;
+  transition: border-color 150ms ease, transform 150ms ease, background-color 150ms ease;
+}
+
+.react-flow__handle:hover {
+  border-color: #7c3aed;
+  background: #f3e8ff;
+  transform: scale(1.2);
+}
+
+.react-flow__controls {
+  box-shadow: none;
+}
+
+.react-flow__attribution {
+  display: none;
+}
+
+/* Subtle custom scrollbars for panels */
+.vf-scroll::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.vf-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.vf-scroll::-webkit-scrollbar-thumb {
+  background: #e2e8f0;
+  border-radius: 9999px;
+}
+
+.vf-scroll::-webkit-scrollbar-thumb:hover {
+  background: #cbd5e1;
+}
