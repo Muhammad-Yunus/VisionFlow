@@ -4,6 +4,7 @@ import {
   text,
   integer,
   real,
+  boolean,
   timestamp,
   jsonb,
 } from 'drizzle-orm/pg-core';
@@ -38,6 +39,7 @@ export const workflows = pgTable('workflows', {
   name: text('name').notNull(),
   description: text('description').notNull().default(''),
   status: text('status').notNull().default('draft'), // 'draft' | 'deployed'
+  isLocked: boolean('is_locked').notNull().default(false),
   definition: jsonb('definition').$type<WorkflowDefinition>().notNull(),
   apiKey: text('api_key').notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
@@ -75,3 +77,21 @@ export const inferenceRuns = pgTable('inference_runs', {
   resultSummary: jsonb('result_summary').$type<Record<string, unknown>>().notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
+
+export const apiCallLogs = pgTable('api_call_logs', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  workflowId: uuid('workflow_id').references(() => workflows.id, {
+    onDelete: 'set null',
+  }),
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
+  method: text('method').notNull(),
+  path: text('path').notNull(),
+  statusCode: integer('status_code').notNull(),
+  durationMs: integer('duration_ms').notNull(),
+  authMethod: text('auth_method').notNull().default('anonymous'),
+  clientIp: text('client_ip').notNull().default(''),
+  requestMeta: jsonb('request_meta').$type<Record<string, unknown>>().notNull(),
+  responseSummary: jsonb('response_summary').$type<Record<string, unknown>>().notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+

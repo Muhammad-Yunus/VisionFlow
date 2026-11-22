@@ -622,3 +622,39 @@ export function createDefaultWorkflowDefinition(): WorkflowDefinition {
     ],
   };
 }
+
+export function createEmptyWorkflowDefinition(): WorkflowDefinition {
+  return {
+    version: '1.0',
+    inputs: [
+      {
+        id: 'input-image',
+        name: 'image',
+        type: 'image',
+        sourceHint: 'upload',
+      },
+    ],
+    nodes: [
+      {
+        id: 'inputs',
+        kind: 'inputs',
+        name: 'Inputs',
+        subtitle: 'Data your workflow needs to run',
+        category: 'inputs',
+        position: { x: 280, y: 40 },
+        params: { sourceType: 'image_upload' },
+      },
+      {
+        id: 'outputs',
+        kind: 'outputs',
+        name: 'Outputs',
+        subtitle: 'Results your workflow returns',
+        category: 'outputs_sinks',
+        position: { x: 280, y: 360 },
+        params: {},
+      },
+    ],
+    edges: [],
+    outputs: [],
+  };
+}

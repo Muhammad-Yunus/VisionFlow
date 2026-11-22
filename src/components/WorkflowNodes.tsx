@@ -21,6 +21,7 @@ import {
   Image as ImageIcon,
   Layers,
   Link2,
+  Lock,
   Play,
   Plus,
   ScanLine,
@@ -55,6 +56,7 @@ export interface UpstreamGroup {
 
 export interface SharedNodeCallbacks {
   models: ModelSummary[];
+  isLocked?: boolean;
   workflowInputs: WorkflowInputField[];
   workflowOutputs: WorkflowOutputMapping[];
   upstreamGroupsByNodeId: Record<string, UpstreamGroup[]>;
@@ -166,60 +168,69 @@ function NodeActionToolbar({
         <span>Test</span>
       </button>
       <div className="h-3.5 w-px bg-slate-200 mx-0.5" />
-      {renaming ? (
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (draftName.trim()) {
-              callbacks.onRenameNode(nodeDef.id, draftName.trim());
-            }
-            setRenaming(false);
-          }}
-          className="flex items-center gap-1 px-1"
-        >
-          <input
-            autoFocus
-            value={draftName}
-            onChange={(e) => setDraftName(e.target.value)}
-            onBlur={() => setRenaming(false)}
-            className="w-28 rounded border border-violet-300 px-1.5 py-0.5 text-[11px] text-slate-900 focus:outline-none"
-          />
-        </form>
+      {callbacks.isLocked ? (
+        <span className="inline-flex items-center gap-1 rounded border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-800">
+          <Lock className="w-3 h-3" />
+          <span>Locked</span>
+        </span>
       ) : (
-        <button
-          type="button"
-          onClick={() => {
-            setDraftName(nodeDef.name);
-            setRenaming(true);
-          }}
-          className="flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900"
-        >
-          <Edit3 className="w-3 h-3" />
-          <span>Rename</span>
-        </button>
-      )}
-      {nodeDef.kind !== 'inputs' && nodeDef.kind !== 'outputs' && (
         <>
-          <button
-            type="button"
-            onClick={() => callbacks.onToggleDisableNode(nodeDef.id)}
-            className="flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900"
-          >
-            {nodeDef.disabled ? (
-              <Eye className="w-3 h-3" />
-            ) : (
-              <EyeOff className="w-3 h-3" />
-            )}
-            <span>{nodeDef.disabled ? 'Enable' : 'Disable'}</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => callbacks.onDeleteNode(nodeDef.id)}
-            className="flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium text-rose-600 hover:bg-rose-50"
-          >
-            <Trash2 className="w-3 h-3" />
-            <span>Delete</span>
-          </button>
+          {renaming ? (
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (draftName.trim()) {
+                  callbacks.onRenameNode(nodeDef.id, draftName.trim());
+                }
+                setRenaming(false);
+              }}
+              className="flex items-center gap-1 px-1"
+            >
+              <input
+                autoFocus
+                value={draftName}
+                onChange={(e) => setDraftName(e.target.value)}
+                onBlur={() => setRenaming(false)}
+                className="w-28 rounded border border-violet-300 px-1.5 py-0.5 text-[11px] text-slate-900 focus:outline-none"
+              />
+            </form>
+          ) : (
+            <button
+              type="button"
+              onClick={() => {
+                setDraftName(nodeDef.name);
+                setRenaming(true);
+              }}
+              className="flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+            >
+              <Edit3 className="w-3 h-3" />
+              <span>Rename</span>
+            </button>
+          )}
+          {nodeDef.kind !== 'inputs' && nodeDef.kind !== 'outputs' && (
+            <>
+              <button
+                type="button"
+                onClick={() => callbacks.onToggleDisableNode(nodeDef.id)}
+                className="flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+              >
+                {nodeDef.disabled ? (
+                  <Eye className="w-3 h-3" />
+                ) : (
+                  <EyeOff className="w-3 h-3" />
+                )}
+                <span>{nodeDef.disabled ? 'Enable' : 'Disable'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => callbacks.onDeleteNode(nodeDef.id)}
+                className="flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium text-rose-600 hover:bg-rose-50"
+              >
+                <Trash2 className="w-3 h-3" />
+                <span>Delete</span>
+              </button>
+            </>
+          )}
         </>
       )}
     </div>
@@ -230,11 +241,13 @@ function FloatingVariableMapper({
   groups,
   outputPorts,
   onPickRef,
+  locked = false,
   titleRight = 'Drag to block fields to connect',
 }: {
   groups: UpstreamGroup[];
   outputPorts?: Array<{ key: string; label: string; dataType: string }>;
   onPickRef: (ref: string, dataType: string) => void;
+  locked?: boolean;
   titleRight?: string;
 }) {
   const totalInputs = groups.reduce((acc, g) => acc + g.outputs.length, 0);
@@ -252,7 +265,7 @@ function FloatingVariableMapper({
               {totalInputs} {totalInputs === 1 ? 'Input' : 'Inputs'}
             </span>
             <span className="text-[10px] text-slate-400 truncate">
-              {titleRight}
+              {locked ? 'Read-only (locked)' : titleRight}
             </span>
           </div>
           <div className="mt-2 space-y-2 max-h-[260px] overflow-y-auto vf-scroll pr-0.5">
@@ -286,16 +299,29 @@ function FloatingVariableMapper({
                         <button
                           key={out.ref}
                           type="button"
-                          draggable
+                          draggable={!locked}
+                          disabled={locked}
                           onDragStart={(e) => {
+                            if (locked) {
+                              e.preventDefault();
+                              return;
+                            }
                             e.dataTransfer.setData('application/visionflow-ref', out.ref);
                             e.dataTransfer.setData('application/visionflow-type', out.dataType);
                           }}
-                          onClick={() => onPickRef(out.ref, out.dataType)}
-                          className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] font-medium cursor-grab active:cursor-grabbing hover:brightness-95 transition ${getChipColors(
-                            grp.category
-                          )}`}
-                          title={`Click or drag ${out.ref}`}
+                          onClick={() => {
+                            if (!locked) onPickRef(out.ref, out.dataType);
+                          }}
+                          className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] font-medium transition ${
+                            locked
+                              ? 'opacity-70 cursor-not-allowed'
+                              : 'cursor-grab active:cursor-grabbing hover:brightness-95'
+                          } ${getChipColors(grp.category)}`}
+                          title={
+                            locked
+                              ? 'Workflow locked — unlock to remap'
+                              : `Click or drag ${out.ref}`
+                          }
                         >
                           <span className="truncate max-w-[140px]">{out.label}</span>
                         </button>
@@ -371,7 +397,7 @@ export function InputsNode({ data, selected }: NodeProps) {
               >
                 <ImageIcon className="w-3 h-3 text-slate-500" />
                 <span>{inp.name}</span>
-                {callbacks.workflowInputs.length > 1 && (
+                {callbacks.workflowInputs.length > 1 && !callbacks.isLocked && (
                   <button
                     type="button"
                     onClick={(e) => {
@@ -389,11 +415,12 @@ export function InputsNode({ data, selected }: NodeProps) {
 
           <button
             type="button"
+            disabled={Boolean(callbacks.isLocked)}
             onClick={(e) => {
               e.stopPropagation();
               callbacks.onAddWorkflowInput();
             }}
-            className="nodrag flex w-full items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-[11.5px] font-medium text-slate-700 hover:bg-slate-50 transition"
+            className="nodrag flex w-full items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-[11.5px] font-medium text-slate-700 hover:bg-slate-50 transition disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <Plus className="w-3.5 h-3.5 text-slate-500" />
             <span>Add Input</span>
@@ -416,6 +443,7 @@ export function OutputsNode({ data, selected }: NodeProps) {
       onDragOver={(e) => e.preventDefault()}
       onDrop={(e) => {
         e.preventDefault();
+        if (callbacks.isLocked) return;
         const ref = e.dataTransfer.getData('application/visionflow-ref');
         const dtype = e.dataTransfer.getData('application/visionflow-type') || 'any';
         if (ref) {
@@ -462,19 +490,21 @@ export function OutputsNode({ data, selected }: NodeProps) {
               <div key={out.id} className="space-y-1">
                 <div className="flex items-center justify-between text-[11px] font-medium text-slate-700">
                   <span className="truncate">{out.name}</span>
-                  <div className="flex items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        callbacks.onRemoveWorkflowOutput(out.id);
-                      }}
-                      className="text-slate-400 hover:text-rose-600"
-                      title="Remove output mapping"
-                    >
-                      <X className="w-3 h-3" />
-                    </button>
-                  </div>
+                  {!callbacks.isLocked && (
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          callbacks.onRemoveWorkflowOutput(out.id);
+                        }}
+                        className="text-slate-400 hover:text-rose-600"
+                        title="Remove output mapping"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </div>
+                  )}
                 </div>
                 <div
                   className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11px] font-medium ${chipClass}`}
@@ -494,6 +524,7 @@ export function OutputsNode({ data, selected }: NodeProps) {
 
           <button
             type="button"
+            disabled={Boolean(callbacks.isLocked)}
             onClick={(e) => {
               e.stopPropagation();
               callbacks.onSelectNode(nodeDef.id);
@@ -507,7 +538,7 @@ export function OutputsNode({ data, selected }: NodeProps) {
                 );
               }
             }}
-            className="nodrag flex w-full items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-[11.5px] font-medium text-slate-700 hover:bg-slate-50 transition"
+            className="nodrag flex w-full items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-[11.5px] font-medium text-slate-700 hover:bg-slate-50 transition disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <Plus className="w-3.5 h-3.5 text-slate-500" />
             <span>Add Output</span>
@@ -518,8 +549,10 @@ export function OutputsNode({ data, selected }: NodeProps) {
       {selected && (
         <FloatingVariableMapper
           groups={upstreamGroups}
+          locked={Boolean(callbacks.isLocked)}
           titleRight="Drag to Connect"
           onPickRef={(ref, dataType) => {
+            if (callbacks.isLocked) return;
             const base = ref.split('.').join('_');
             callbacks.onAddWorkflowOutput(base, ref, dataType);
           }}
@@ -544,6 +577,7 @@ export function WorkflowStepNode({ data, selected }: NodeProps) {
 
   const handleFieldDrop = (fieldKey: string, e: React.DragEvent) => {
     e.preventDefault();
+    if (callbacks.isLocked) return;
     const ref = e.dataTransfer.getData('application/visionflow-ref');
     if (ref) {
       callbacks.onUpdateNodeParams(nodeDef.id, { [fieldKey]: ref });
@@ -563,11 +597,13 @@ export function WorkflowStepNode({ data, selected }: NodeProps) {
         key={fieldKey}
         onDragOver={(e) => e.preventDefault()}
         onDrop={(e) => handleFieldDrop(fieldKey, e)}
-        onClick={() => setFocusedField(fieldKey)}
-        className={`rounded-lg border p-2 transition cursor-pointer ${
-          isFocused
-            ? 'border-violet-400 bg-violet-50/40'
-            : 'border-slate-200 bg-white hover:border-slate-300'
+        onClick={() => !callbacks.isLocked && setFocusedField(fieldKey)}
+        className={`rounded-lg border p-2 transition ${
+          callbacks.isLocked
+            ? 'border-slate-200 bg-slate-50/70 cursor-not-allowed'
+            : isFocused
+              ? 'border-violet-400 bg-violet-50/40 cursor-pointer'
+              : 'border-slate-200 bg-white hover:border-slate-300 cursor-pointer'
         }`}
       >
         <div className="flex items-center justify-between">
@@ -575,7 +611,11 @@ export function WorkflowStepNode({ data, selected }: NodeProps) {
             {label} <span className="text-rose-500">*</span>
           </span>
           <span className="text-[10px] text-slate-400">
-            {isFocused ? 'Click input chip →' : 'Drop or click'}
+            {callbacks.isLocked
+              ? 'Locked'
+              : isFocused
+                ? 'Click input chip →'
+                : 'Drop or click'}
           </span>
         </div>
         <p className="text-[10.5px] text-slate-500 mt-0.5">{helpText}</p>
@@ -583,16 +623,18 @@ export function WorkflowStepNode({ data, selected }: NodeProps) {
           {val ? (
             <span className="inline-flex items-center gap-1 rounded border border-slate-200 bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-800">
               <span>{val}</span>
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  callbacks.onUpdateNodeParams(nodeDef.id, { [fieldKey]: '' });
-                }}
-                className="text-slate-400 hover:text-slate-700"
-              >
-                <X className="w-2.5 h-2.5" />
-              </button>
+              {!callbacks.isLocked && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    callbacks.onUpdateNodeParams(nodeDef.id, { [fieldKey]: '' });
+                  }}
+                  className="text-slate-400 hover:text-slate-700"
+                >
+                  <X className="w-2.5 h-2.5" />
+                </button>
+              )}
             </span>
           ) : (
             <span className="text-[11px] italic text-slate-400">
@@ -647,71 +689,79 @@ export function WorkflowStepNode({ data, selected }: NodeProps) {
             className="nodrag nopan border-t border-slate-100 px-3 py-3 space-y-2.5 bg-[#fcfcfd]"
             onClick={(e) => e.stopPropagation()}
           >
+            {callbacks.isLocked && (
+              <div className="flex items-center gap-1.5 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-[10.5px] font-medium text-amber-800">
+                <Lock className="w-3 h-3 shrink-0" />
+                <span>Read-only — unlock workflow to edit</span>
+              </div>
+            )}
             {isModelNode && (
               <>
-                {renderRefField(
-                  'image',
-                  'Image',
-                  'The image to infer on.',
-                  'inputs.image'
-                )}
+                <fieldset disabled={Boolean(callbacks.isLocked)} className="contents">
+                  {renderRefField(
+                    'image',
+                    'Image',
+                    'The image to infer on.',
+                    'inputs.image'
+                  )}
 
-                <div className="space-y-1">
-                  <div className="flex items-center justify-between">
-                    <label className="text-[11px] font-semibold text-slate-800">
-                      Model <span className="text-rose-500">*</span>
-                    </label>
-                    <button
-                      type="button"
-                      onClick={callbacks.onOpenModelRegistry}
-                      className="inline-flex items-center gap-1 text-[10.5px] font-medium text-violet-700 hover:underline"
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between">
+                      <label className="text-[11px] font-semibold text-slate-800">
+                        Model <span className="text-rose-500">*</span>
+                      </label>
+                      <button
+                        type="button"
+                        onClick={callbacks.onOpenModelRegistry}
+                        className="inline-flex items-center gap-1 text-[10.5px] font-medium text-violet-700 hover:underline"
+                      >
+                        <Upload className="w-3 h-3" />
+                        <span>Upload .pt/.onnx</span>
+                      </button>
+                    </div>
+                    <select
+                      value={String(nodeDef.params.modelId ?? '')}
+                      onChange={(e) => {
+                        const chosen = callbacks.models.find(
+                          (m) => m.id === e.target.value
+                        );
+                        callbacks.onUpdateNodeParams(nodeDef.id, {
+                          modelId: e.target.value,
+                          modelName: chosen?.name ?? e.target.value,
+                        });
+                      }}
+                      className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[12px] text-slate-900 focus:border-violet-500 focus:outline-none"
                     >
-                      <Upload className="w-3 h-3" />
-                      <span>Upload .pt/.onnx</span>
-                    </button>
+                      {callbacks.models.map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.name} ({m.format.toUpperCase()} · {m.classNames.length} cls)
+                        </option>
+                      ))}
+                    </select>
                   </div>
-                  <select
-                    value={String(nodeDef.params.modelId ?? '')}
-                    onChange={(e) => {
-                      const chosen = callbacks.models.find(
-                        (m) => m.id === e.target.value
-                      );
-                      callbacks.onUpdateNodeParams(nodeDef.id, {
-                        modelId: e.target.value,
-                        modelName: chosen?.name ?? e.target.value,
-                      });
-                    }}
-                    className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[12px] text-slate-900 focus:border-violet-500 focus:outline-none"
-                  >
-                    {callbacks.models.map((m) => (
-                      <option key={m.id} value={m.id}>
-                        {m.name} ({m.format.toUpperCase()} · {m.classNames.length} cls)
-                      </option>
-                    ))}
-                  </select>
-                </div>
 
-                <div className="space-y-1">
-                  <div className="flex items-center justify-between text-[11px]">
-                    <span className="font-semibold text-slate-800">Confidence</span>
-                    <span className="font-mono text-slate-700 tabular-nums">
-                      {Number(nodeDef.params.confidence ?? 0.4).toFixed(2)}
-                    </span>
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="font-semibold text-slate-800">Confidence</span>
+                      <span className="font-mono text-slate-700 tabular-nums">
+                        {Number(nodeDef.params.confidence ?? 0.4).toFixed(2)}
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0.05}
+                      max={0.95}
+                      step={0.05}
+                      value={Number(nodeDef.params.confidence ?? 0.4)}
+                      onChange={(e) =>
+                        callbacks.onUpdateNodeParams(nodeDef.id, {
+                          confidence: Number(e.target.value),
+                        })
+                      }
+                      className="w-full accent-[#7c3aed]"
+                    />
                   </div>
-                  <input
-                    type="range"
-                    min={0.05}
-                    max={0.95}
-                    step={0.05}
-                    value={Number(nodeDef.params.confidence ?? 0.4)}
-                    onChange={(e) =>
-                      callbacks.onUpdateNodeParams(nodeDef.id, {
-                        confidence: Number(e.target.value),
-                      })
-                    }
-                    className="w-full accent-[#7c3aed]"
-                  />
-                </div>
+                </fieldset>
 
                 <button
                   type="button"
@@ -731,35 +781,38 @@ export function WorkflowStepNode({ data, selected }: NodeProps) {
                 </button>
 
                 {showAdditional && (
-                  <div className="space-y-2 pt-1 border-t border-slate-100">
-                    <div className="space-y-1">
-                      <div className="flex items-center justify-between text-[11px]">
-                        <span className="font-semibold text-slate-800">
-                          IoU Threshold
-                        </span>
-                        <span className="font-mono text-slate-700 tabular-nums">
-                          {Number(nodeDef.params.iou ?? 0.45).toFixed(2)}
-                        </span>
+                  <fieldset disabled={Boolean(callbacks.isLocked)} className="contents">
+                    <div className="space-y-2 pt-1 border-t border-slate-100">
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between text-[11px]">
+                          <span className="font-semibold text-slate-800">
+                            IoU Threshold
+                          </span>
+                          <span className="font-mono text-slate-700 tabular-nums">
+                            {Number(nodeDef.params.iou ?? 0.45).toFixed(2)}
+                          </span>
+                        </div>
+                        <input
+                          type="range"
+                          min={0.1}
+                          max={0.95}
+                          step={0.05}
+                          value={Number(nodeDef.params.iou ?? 0.45)}
+                          onChange={(e) =>
+                            callbacks.onUpdateNodeParams(nodeDef.id, {
+                              iou: Number(e.target.value),
+                            })
+                          }
+                          className="w-full accent-[#7c3aed]"
+                        />
                       </div>
-                      <input
-                        type="range"
-                        min={0.1}
-                        max={0.95}
-                        step={0.05}
-                        value={Number(nodeDef.params.iou ?? 0.45)}
-                        onChange={(e) =>
-                          callbacks.onUpdateNodeParams(nodeDef.id, {
-                            iou: Number(e.target.value),
-                          })
-                        }
-                        className="w-full accent-[#7c3aed]"
-                      />
                     </div>
-                  </div>
+                  </fieldset>
                 )}
               </>
             )}
 
+            <fieldset disabled={Boolean(callbacks.isLocked)} className="contents">
             {(nodeDef.kind === 'bounding_box_visualization' ||
               nodeDef.kind === 'label_visualization' ||
               nodeDef.kind === 'mask_visualization' ||
@@ -1064,6 +1117,7 @@ export function WorkflowStepNode({ data, selected }: NodeProps) {
                 )}
               </>
             )}
+            </fieldset>
           </div>
         )}
 
@@ -1075,7 +1129,9 @@ export function WorkflowStepNode({ data, selected }: NodeProps) {
         <FloatingVariableMapper
           groups={upstreamGroups}
           outputPorts={spec.outputPorts}
+          locked={Boolean(callbacks.isLocked)}
           onPickRef={(ref) => {
+            if (callbacks.isLocked) return;
             const targetKey =
               focusedField || spec.inputPorts[0]?.key || 'image';
             callbacks.onUpdateNodeParams(nodeDef.id, { [targetKey]: ref });

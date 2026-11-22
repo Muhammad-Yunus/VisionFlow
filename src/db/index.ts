@@ -85,11 +85,13 @@ export async function initDatabase(): Promise<{
         name TEXT NOT NULL,
         description TEXT NOT NULL DEFAULT '',
         status TEXT NOT NULL DEFAULT 'draft',
+        is_locked BOOLEAN NOT NULL DEFAULT FALSE,
         definition JSONB NOT NULL,
         api_key TEXT NOT NULL,
         created_at TIMESTAMP NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMP NOT NULL DEFAULT NOW()
       );
+      ALTER TABLE workflows ADD COLUMN IF NOT EXISTS is_locked BOOLEAN NOT NULL DEFAULT FALSE;
 
       CREATE TABLE IF NOT EXISTS streams (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -116,6 +118,21 @@ export async function initDatabase(): Promise<{
         duration_ms INTEGER NOT NULL,
         detection_count INTEGER NOT NULL DEFAULT 0,
         result_summary JSONB NOT NULL,
+        created_at TIMESTAMP NOT NULL DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS api_call_logs (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        workflow_id UUID REFERENCES workflows(id) ON DELETE SET NULL,
+        user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+        method TEXT NOT NULL,
+        path TEXT NOT NULL,
+        status_code INTEGER NOT NULL,
+        duration_ms INTEGER NOT NULL,
+        auth_method TEXT NOT NULL DEFAULT 'anonymous',
+        client_ip TEXT NOT NULL DEFAULT '',
+        request_meta JSONB NOT NULL DEFAULT '{}'::jsonb,
+        response_summary JSONB NOT NULL DEFAULT '{}'::jsonb,
         created_at TIMESTAMP NOT NULL DEFAULT NOW()
       );
     `);

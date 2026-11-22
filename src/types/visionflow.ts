@@ -30,12 +30,28 @@ export interface InferenceRunSummary {
   createdAt: string;
 }
 
+export interface ApiCallLogSummary {
+  id: string;
+  workflowId: string | null;
+  userId: string | null;
+  method: string;
+  path: string;
+  statusCode: number;
+  durationMs: number;
+  authMethod: string;
+  clientIp: string;
+  requestMeta: Record<string, unknown>;
+  responseSummary: Record<string, unknown>;
+  createdAt: string;
+}
+
 export interface WorkflowSummary {
   id: string;
   userId: string | null;
   name: string;
   description: string;
   status: 'draft' | 'deployed';
+  isLocked?: boolean;
   definition: WorkflowDefinition;
   apiKey: string;
   createdAt: string;

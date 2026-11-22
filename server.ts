@@ -20,6 +20,10 @@ import { store, seedDatabaseDefaults } from './server/store.ts';
 import { inspectModelFile } from './server/modelInspector.ts';
 import { executeWorkflowDag } from './server/dagEngine.ts';
 import {
+  generateWorkflowWithAi,
+  getAiGeneratorStatus,
+} from './server/aiWorkflowGenerator.ts';
+import {
   startStreamWorker,
   stopStreamWorker,
   getActiveWorker,
@@ -44,6 +48,7 @@ const workflowPayloadSchema = z.object({
   name: z.string().min(1).max(120),
   description: z.string().max(500).optional(),
   status: z.enum(['draft', 'deployed']).optional(),
+  isLocked: z.boolean().optional(),
   definition: z.object({
     version: z.literal('1.0'),
     inputs: z.array(z.any()),
@@ -51,6 +56,11 @@ const workflowPayloadSchema = z.object({
     edges: z.array(z.any()),
     outputs: z.array(z.any()),
   }),
+});
+
+const aiGenerateRequestSchema = z.object({
+  prompt: z.string().trim().min(5, 'Describe your workflow in at least 5 characters.').max(2000),
+  customName: z.string().trim().max(120).optional(),
 });
 
 const createStreamSchema = z.object({
@@ -114,6 +124,88 @@ async function startServer() {
   const app = express();
   app.use(express.json({ limit: '25mb' }));
   app.use(express.urlencoded({ extended: true, limit: '25mb' }));
+
+  // Persist structured API call logs to PostgreSQL for /api/* requests
+  app.use('/api', (req: AuthenticatedRequest, res, next) => {
+    const cleanPath = req.originalUrl.split('?')[0] ?? req.originalUrl;
+    if (
+      cleanPath === '/api/api-logs' ||
+      cleanPath === '/api/health' ||
+      cleanPath.endsWith('/mjpeg') ||
+      cleanPath.endsWith('/latest')
+    ) {
+      next();
+      return;
+    }
+
+    const startMs = Date.now();
+    res.on('finish', () => {
+      const apiKeyHeader =
+        typeof req.headers['x-api-key'] === 'string'
+          ? req.headers['x-api-key'].trim()
+          : '';
+      const hasBearer =
+        typeof req.headers.authorization === 'string' &&
+        req.headers.authorization.startsWith('Bearer ');
+      const authMethod = apiKeyHeader
+        ? 'api_key'
+        : hasBearer
+          ? 'bearer'
+          : 'anonymous';
+
+      const wfMatch = cleanPath.match(/\/workflows\/([0-9a-f-]{36})\//i);
+      const workflowId =
+        typeof res.locals.apiLogWorkflowId === 'string'
+          ? res.locals.apiLogWorkflowId
+          : wfMatch?.[1] ??
+            (typeof req.body?.workflowId === 'string' ? req.body.workflowId : null);
+
+      const contentType = String(req.headers['content-type'] ?? '');
+      const contentLength = Number(req.headers['content-length'] ?? 0) || 0;
+      const bodyKeys =
+        req.body && typeof req.body === 'object' && !Buffer.isBuffer(req.body)
+          ? Object.keys(req.body).filter(
+              (k) => !['password', 'token', 'image', 'imageBase64'].includes(k)
+            )
+          : [];
+
+      const requestMeta: Record<string, unknown> = {
+        contentType: contentType.split(';')[0] || 'none',
+        contentLengthBytes: contentLength,
+        ...(apiKeyHeader ? { maskedApiKey: `...${apiKeyHeader.slice(-6)}` } : {}),
+        ...(bodyKeys.length > 0 ? { bodyFields: bodyKeys } : {}),
+      };
+
+      const responseSummary: Record<string, unknown> =
+        res.locals.apiLogSummary && typeof res.locals.apiLogSummary === 'object'
+          ? (res.locals.apiLogSummary as Record<string, unknown>)
+          : {};
+
+      const rawIp =
+        (typeof req.headers['x-forwarded-for'] === 'string'
+          ? req.headers['x-forwarded-for'].split(',')[0]?.trim()
+          : '') ||
+        req.socket.remoteAddress ||
+        '';
+
+      void store
+        .recordApiCallLog({
+          workflowId,
+          userId: req.user?.id ?? null,
+          method: req.method,
+          path: cleanPath,
+          statusCode: res.statusCode,
+          durationMs: Date.now() - startMs,
+          authMethod,
+          clientIp: rawIp.replace(/^::ffff:/, ''),
+          requestMeta,
+          responseSummary,
+        })
+        .catch(() => undefined);
+    });
+
+    next();
+  });
 
   const modelUpload = multer({
     storage: multer.diskStorage({
@@ -381,23 +473,68 @@ async function startServer() {
     res.status(201).json({ workflow: wf });
   });
 
+  // --- AI Auto-Create Workflow Routes (OpenAI API Compatible) ---
+  app.get('/api/ai/status', (_req, res) => {
+    res.json(getAiGeneratorStatus());
+  });
+
+  app.post(
+    '/api/workflows/ai-generate',
+    optionalAuthMiddleware,
+    async (req: AuthenticatedRequest, res) => {
+      const parsed = aiGenerateRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({
+          error: parsed.error.issues[0]?.message ?? 'Invalid AI workflow prompt.',
+        });
+        return;
+      }
+      try {
+        const availableModels = await store.listModels(req.user?.id).catch(() => []);
+        const generated = await generateWorkflowWithAi({
+          prompt: parsed.data.prompt,
+          customName: parsed.data.customName,
+          models: availableModels,
+        });
+        res.locals.apiLogSummary = {
+          generated_name: generated.name,
+          node_count: generated.definition.nodes.length,
+          edge_count: generated.definition.edges.length,
+        };
+        res.json(generated);
+      } catch (err) {
+        const msg =
+          err instanceof Error ? err.message : 'AI workflow generation failed.';
+        const status = msg.includes('not configured') ? 503 : 502;
+        res.locals.apiLogSummary = { error: msg };
+        res.status(status).json({ error: msg });
+      }
+    }
+  );
+
   app.put('/api/workflows/:id', requireAuthMiddleware, async (req: AuthenticatedRequest, res) => {
     const parsed = workflowPayloadSchema.partial().safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid workflow update' });
       return;
     }
-    const updated = await store.updateWorkflow(String(req.params.id), req.user!.id, {
-      name: parsed.data.name,
-      description: parsed.data.description,
-      status: parsed.data.status,
-      definition: parsed.data.definition as WorkflowDefinition | undefined,
-    });
-    if (!updated) {
-      res.status(404).json({ error: 'Workflow not found or access denied.' });
-      return;
+    try {
+      const updated = await store.updateWorkflow(String(req.params.id), req.user!.id, {
+        name: parsed.data.name,
+        description: parsed.data.description,
+        status: parsed.data.status,
+        isLocked: parsed.data.isLocked,
+        definition: parsed.data.definition as WorkflowDefinition | undefined,
+      });
+      if (!updated) {
+        res.status(404).json({ error: 'Workflow not found or access denied.' });
+        return;
+      }
+      res.json({ workflow: updated });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Workflow update failed';
+      res.status(msg.includes('locked') ? 423 : 400).json({ error: msg });
     }
-    res.json({ workflow: updated });
   });
 
   app.post('/api/workflows/:id/deploy', requireAuthMiddleware, async (req: AuthenticatedRequest, res) => {
@@ -418,6 +555,35 @@ async function startServer() {
     try {
       const runs = await store.listInferenceRuns(String(req.params.id));
       res.json({ runs });
+    } catch (err) {
+      res.status(503).json({
+        error: err instanceof Error ? err.message : 'Database unavailable',
+      });
+    }
+  });
+
+  app.get('/api/api-logs', optionalAuthMiddleware, async (req, res) => {
+    try {
+      const workflowId =
+        typeof req.query.workflowId === 'string' && req.query.workflowId.trim()
+          ? req.query.workflowId.trim()
+          : undefined;
+      const method =
+        typeof req.query.method === 'string' ? req.query.method : undefined;
+      const status =
+        typeof req.query.status === 'string' ? req.query.status : undefined;
+      const endpoint =
+        typeof req.query.endpoint === 'string' ? req.query.endpoint : undefined;
+      const limit = Number(req.query.limit ?? 100) || 100;
+
+      const logs = await store.listApiCallLogs({
+        workflowId,
+        method,
+        status,
+        endpoint,
+        limit,
+      });
+      res.json({ logs });
     } catch (err) {
       res.status(503).json({
         error: err instanceof Error ? err.message : 'Database unavailable',
@@ -477,11 +643,19 @@ async function startServer() {
           },
         });
 
+        res.locals.apiLogWorkflowId = workflowId;
+        res.locals.apiLogSummary = {
+          inference_id: result.inference_id,
+          detection_count: result.detection_count,
+          source_type: req.body?.sourceType ?? 'file',
+          execution_order: result.execution_order,
+        };
+
         res.json(result);
       } catch (err) {
-        res.status(400).json({
-          error: err instanceof Error ? err.message : 'Workflow execution failed',
-        });
+        const msg = err instanceof Error ? err.message : 'Workflow execution failed';
+        res.locals.apiLogSummary = { error: msg };
+        res.status(400).json({ error: msg });
       }
     }
   );
@@ -540,15 +714,23 @@ async function startServer() {
           },
         });
 
+        res.locals.apiLogWorkflowId = wf.id;
+        res.locals.apiLogSummary = {
+          workflow_name: wf.name,
+          inference_id: result.inference_id,
+          detection_count: result.detection_count,
+          duration_ms: result.duration_ms,
+        };
+
         res.json({
           workflow_id: wf.id,
           workflow_name: wf.name,
           ...result,
         });
       } catch (err) {
-        res.status(400).json({
-          error: err instanceof Error ? err.message : 'Inference failed',
-        });
+        const msg = err instanceof Error ? err.message : 'Inference failed';
+        res.locals.apiLogSummary = { error: msg };
+        res.status(400).json({ error: msg });
       }
     }
   );

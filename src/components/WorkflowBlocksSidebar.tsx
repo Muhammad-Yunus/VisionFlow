@@ -10,6 +10,7 @@ import {
   Filter,
   GitBranch,
   Layers,
+  Lock,
   Plus,
   Radio,
   ScanLine,
@@ -29,6 +30,7 @@ import {
 
 interface WorkflowBlocksSidebarProps {
   open: boolean;
+  locked?: boolean;
   onClose: () => void;
   onAddBlock: (item: BlockCatalogItem) => void;
 }
@@ -93,6 +95,7 @@ function BlockItemIcon({
 
 export function WorkflowBlocksSidebar({
   open,
+  locked = false,
   onClose,
   onAddBlock,
 }: WorkflowBlocksSidebarProps) {
@@ -198,6 +201,14 @@ export function WorkflowBlocksSidebar({
         </div>
       </div>
 
+      {/* Locked notice */}
+      {locked && (
+        <div className="mx-3.5 mt-2.5 flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[11px] font-medium text-amber-800">
+          <Lock className="w-3.5 h-3.5 shrink-0 text-amber-700" />
+          <span>Workflow locked — unlock to add blocks</span>
+        </div>
+      )}
+
       {/* Body: Categories or Blocks */}
       <div className="flex-1 overflow-y-auto vf-scroll px-2.5 py-2">
         {!showBlockList ? (
@@ -255,16 +266,28 @@ export function WorkflowBlocksSidebar({
                 return (
                   <div
                     key={block.kind}
-                    draggable
+                    draggable={!locked}
                     onDragStart={(e) => {
+                      if (locked) {
+                        e.preventDefault();
+                        return;
+                      }
                       e.dataTransfer.setData(
                         'application/visionflow-block',
                         block.kind
                       );
                     }}
                     onClick={() => onAddBlock(block)}
-                    className="group flex items-start gap-2.5 rounded-lg border border-transparent p-2 hover:border-slate-200 hover:bg-slate-50 cursor-pointer transition"
-                    title="Click or drag onto canvas"
+                    className={`group flex items-start gap-2.5 rounded-lg border border-transparent p-2 transition ${
+                      locked
+                        ? 'opacity-60 cursor-not-allowed'
+                        : 'hover:border-slate-200 hover:bg-slate-50 cursor-pointer'
+                    }`}
+                    title={
+                      locked
+                        ? 'Workflow is locked — unlock to add blocks'
+                        : 'Click or drag onto canvas'
+                    }
                   >
                     <span
                       style={{

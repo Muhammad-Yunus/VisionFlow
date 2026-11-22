@@ -9,6 +9,7 @@ import {
   workflows,
   streams,
   inferenceRuns,
+  apiCallLogs,
 } from '../src/db/schema.ts';
 import {
   createDefaultWorkflowDefinition,
@@ -45,6 +46,7 @@ export interface WorkflowRecord {
   name: string;
   description: string;
   status: 'draft' | 'deployed';
+  isLocked: boolean;
   definition: WorkflowDefinition;
   apiKey: string;
   createdAt: Date;
@@ -76,6 +78,21 @@ export interface InferenceRunRecord {
   durationMs: number;
   detectionCount: number;
   resultSummary: Record<string, unknown>;
+  createdAt: Date;
+}
+
+export interface ApiCallLogRecord {
+  id: string;
+  workflowId: string | null;
+  userId: string | null;
+  method: string;
+  path: string;
+  statusCode: number;
+  durationMs: number;
+  authMethod: string;
+  clientIp: string;
+  requestMeta: Record<string, unknown>;
+  responseSummary: Record<string, unknown>;
   createdAt: Date;
 }
 
@@ -212,7 +229,7 @@ export const store = {
     const db = requireDb();
     const rows = await db.select().from(models).orderBy(desc(models.createdAt));
     return rows
-      .filter((r) => !userId || !r.userId || r.userId === userId)
+      .filter((r) => !r.userId || (Boolean(userId) && r.userId === userId))
       .map((r) => ({
         id: r.id,
         userId: r.userId,
@@ -309,13 +326,14 @@ export const store = {
       .from(workflows)
       .orderBy(desc(workflows.updatedAt));
     return rows
-      .filter((r) => !userId || !r.userId || r.userId === userId)
+      .filter((r) => !r.userId || (Boolean(userId) && r.userId === userId))
       .map((r) => ({
         id: r.id,
         userId: r.userId,
         name: r.name,
         description: r.description,
         status: r.status as 'draft' | 'deployed',
+        isLocked: Boolean(r.isLocked),
         definition: r.definition,
         apiKey: r.apiKey,
         createdAt: r.createdAt,
@@ -340,6 +358,7 @@ export const store = {
       name: row.name,
       description: row.description,
       status: row.status as 'draft' | 'deployed',
+      isLocked: Boolean(row.isLocked),
       definition: row.definition,
       apiKey: row.apiKey,
       createdAt: row.createdAt,
@@ -353,6 +372,7 @@ export const store = {
     description?: string;
     definition: WorkflowDefinition;
     status?: 'draft' | 'deployed';
+    isLocked?: boolean;
   }): Promise<WorkflowRecord> {
     const db = requireDb();
     const apiKey = 'vf_' + crypto.randomBytes(18).toString('hex');
@@ -363,6 +383,7 @@ export const store = {
         name: input.name.trim(),
         description: input.description?.trim() ?? '',
         status: input.status ?? 'draft',
+        isLocked: Boolean(input.isLocked),
         definition: input.definition,
         apiKey,
       })
@@ -373,6 +394,7 @@ export const store = {
       name: row.name,
       description: row.description,
       status: row.status as 'draft' | 'deployed',
+      isLocked: Boolean(row.isLocked),
       definition: row.definition,
       apiKey: row.apiKey,
       createdAt: row.createdAt,
@@ -388,12 +410,21 @@ export const store = {
       description?: string;
       definition?: WorkflowDefinition;
       status?: 'draft' | 'deployed';
+      isLocked?: boolean;
     }
   ): Promise<WorkflowRecord | null> {
     const db = requireDb();
     const existing = await this.getWorkflowById(id);
     if (!existing) return null;
     if (existing.userId && existing.userId !== userId) return null;
+
+    const modifyingStructure =
+      patch.name !== undefined ||
+      patch.description !== undefined ||
+      patch.definition !== undefined;
+    if (existing.isLocked && patch.isLocked !== false && modifyingStructure) {
+      throw new Error('Workflow is locked. Unlock it before saving modifications.');
+    }
 
     const [row] = await db
       .update(workflows)
@@ -403,6 +434,7 @@ export const store = {
         ...(patch.description !== undefined ? { description: patch.description } : {}),
         ...(patch.definition !== undefined ? { definition: patch.definition } : {}),
         ...(patch.status !== undefined ? { status: patch.status } : {}),
+        ...(patch.isLocked !== undefined ? { isLocked: patch.isLocked } : {}),
         updatedAt: new Date(),
       })
       .where(eq(workflows.id, id))
@@ -415,6 +447,7 @@ export const store = {
       name: row.name,
       description: row.description,
       status: row.status as 'draft' | 'deployed',
+      isLocked: Boolean(row.isLocked),
       definition: row.definition,
       apiKey: row.apiKey,
       createdAt: row.createdAt,
@@ -590,5 +623,101 @@ export const store = {
       .orderBy(desc(inferenceRuns.createdAt))
       .limit(30);
     return rows.filter((r) => !workflowId || r.workflowId === workflowId);
+  },
+
+  async recordApiCallLog(input: {
+    workflowId?: string | null;
+    userId?: string | null;
+    method: string;
+    path: string;
+    statusCode: number;
+    durationMs: number;
+    authMethod: string;
+    clientIp: string;
+    requestMeta: Record<string, unknown>;
+    responseSummary: Record<string, unknown>;
+  }): Promise<void> {
+    const db = getDb();
+    if (!db) return;
+
+    let validWorkflowId: string | null = input.workflowId ?? null;
+    if (
+      !validWorkflowId ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+        validWorkflowId
+      )
+    ) {
+      validWorkflowId = null;
+    } else {
+      const [wfRow] = await db
+        .select({ id: workflows.id })
+        .from(workflows)
+        .where(eq(workflows.id, validWorkflowId))
+        .limit(1);
+      if (!wfRow) validWorkflowId = null;
+    }
+
+    let validUserId: string | null = input.userId ?? null;
+    if (
+      !validUserId ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+        validUserId
+      )
+    ) {
+      validUserId = null;
+    }
+
+    await db.insert(apiCallLogs).values({
+      workflowId: validWorkflowId,
+      userId: validUserId,
+      method: input.method,
+      path: input.path,
+      statusCode: input.statusCode,
+      durationMs: Math.max(0, Math.round(input.durationMs)),
+      authMethod: input.authMethod,
+      clientIp: input.clientIp,
+      requestMeta: input.requestMeta,
+      responseSummary: input.responseSummary,
+    });
+  },
+
+  async listApiCallLogs(options?: {
+    workflowId?: string;
+    method?: string;
+    status?: string;
+    endpoint?: string;
+    limit?: number;
+  }): Promise<ApiCallLogRecord[]> {
+    const db = requireDb();
+    const limit = Math.min(200, Math.max(1, options?.limit ?? 100));
+    const rows = await db
+      .select()
+      .from(apiCallLogs)
+      .orderBy(desc(apiCallLogs.createdAt))
+      .limit(limit);
+
+    return rows.filter((r) => {
+      if (options?.workflowId && r.workflowId !== options.workflowId) return false;
+      if (
+        options?.method &&
+        options.method !== 'ALL' &&
+        r.method.toUpperCase() !== options.method.toUpperCase()
+      ) {
+        return false;
+      }
+      if (options?.status === '2xx' && (r.statusCode < 200 || r.statusCode >= 300)) {
+        return false;
+      }
+      if (options?.status === '4xx_5xx' && r.statusCode < 400) {
+        return false;
+      }
+      if (options?.endpoint === 'infer' && !r.path.includes('/infer')) {
+        return false;
+      }
+      if (options?.endpoint === 'run' && !r.path.includes('/workflows/run')) {
+        return false;
+      }
+      return true;
+    });
   },
 };

@@ -97,12 +97,26 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 
+  getAiStatus: () =>
+    apiFetch<{ configured: boolean; model: string | null }>('/api/ai/status'),
+
+  aiGenerateWorkflow: (payload: { prompt: string; customName?: string }) =>
+    apiFetch<{
+      name: string;
+      description: string;
+      definition: WorkflowDefinition;
+    }>('/api/workflows/ai-generate', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
   updateWorkflow: (
     id: string,
     payload: {
       name?: string;
       description?: string;
       status?: 'draft' | 'deployed';
+      isLocked?: boolean;
       definition?: WorkflowDefinition;
     }
   ) =>
@@ -132,6 +146,27 @@ export const api = {
         createdAt: string;
       }>;
     }>(`/api/workflows/${encodeURIComponent(workflowId)}/runs`),
+
+  listApiLogs: (params?: {
+    workflowId?: string;
+    method?: string;
+    status?: string;
+    endpoint?: string;
+    limit?: number;
+  }) => {
+    const qs = new URLSearchParams();
+    if (params?.workflowId) qs.set('workflowId', params.workflowId);
+    if (params?.method && params.method !== 'ALL') qs.set('method', params.method);
+    if (params?.status && params.status !== 'ALL') qs.set('status', params.status);
+    if (params?.endpoint && params.endpoint !== 'ALL') {
+      qs.set('endpoint', params.endpoint);
+    }
+    if (params?.limit) qs.set('limit', String(params.limit));
+    const query = qs.toString();
+    return apiFetch<{
+      logs: import('../types/visionflow').ApiCallLogSummary[];
+    }>(`/api/api-logs${query ? `?${query}` : ''}`);
+  },
 
   runWorkflow: (payload: {
     workflowId?: string;
