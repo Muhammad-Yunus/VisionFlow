@@ -9,15 +9,15 @@ export interface DetectionPrediction {
   class: string;
   class_id: number;
   confidence: number;
-  x: number; // center x in image pixels
-  y: number; // center y in image pixels
+  x: number;
+  y: number;
   width: number;
   height: number;
   x1: number;
   y1: number;
   x2: number;
   y2: number;
-  points?: Array<{ x: number; y: number }>; // segmentation polygon
+  points?: Array<{ x: number; y: number }>;
   keypoints?: Array<{ x: number; y: number; confidence: number; name?: string }>;
 }
 
@@ -25,7 +25,7 @@ export interface YoloInferenceResult {
   inference_id: string;
   model: string;
   task: 'detect' | 'segment' | 'pose';
-  engine: 'onnxruntime-node' | 'local-vision-analyzer';
+  engine: 'onnxruntime-node';
   image: { width: number; height: number };
   predictions: DetectionPrediction[];
   durationMs: number;
@@ -48,7 +48,8 @@ function iouScore(a: DetectionPrediction, b: DetectionPrediction): number {
   const interY1 = Math.max(a.y1, b.y1);
   const interX2 = Math.min(a.x2, b.x2);
   const interY2 = Math.min(a.y2, b.y2);
-  const interArea = Math.max(0, interX2 - interX1) * Math.max(0, interY2 - interY1);
+  const interArea =
+    Math.max(0, interX2 - interX1) * Math.max(0, interY2 - interY1);
   const areaA = Math.max(0, a.x2 - a.x1) * Math.max(0, a.y2 - a.y1);
   const areaB = Math.max(0, b.x2 - b.x1) * Math.max(0, b.y2 - b.y1);
   const unionArea = areaA + areaB - interArea;
@@ -97,67 +98,98 @@ function colorForClass(classId: number): string {
   return BOX_COLORS[Math.abs(classId) % BOX_COLORS.length];
 }
 
-function buildPolygonAroundBox(
-  x1: number,
-  y1: number,
-  x2: number,
-  y2: number
+function sigmoid(x: number): number {
+  return 1 / (1 + Math.exp(-x));
+}
+
+function extractMaskPolygonFromPrototypes(
+  maskCoeffs: number[],
+  protoData: Float32Array,
+  protoC: number,
+  protoH: number,
+  protoW: number,
+  box: { x1: number; y1: number; x2: number; y2: number },
+  targetW: number,
+  targetH: number,
+  padX: number,
+  padY: number,
+  scale: number
 ): Array<{ x: number; y: number }> {
-  const w = x2 - x1;
-  const h = y2 - y1;
-  return [
-    { x: Math.round(x1 + w * 0.15), y: Math.round(y1 + h * 0.04) },
-    { x: Math.round(x1 + w * 0.85), y: Math.round(y1 + h * 0.04) },
-    { x: Math.round(x2 - w * 0.04), y: Math.round(y1 + h * 0.25) },
-    { x: Math.round(x2 - w * 0.03), y: Math.round(y2 - h * 0.15) },
-    { x: Math.round(x1 + w * 0.82), y: Math.round(y2 - h * 0.03) },
-    { x: Math.round(x1 + w * 0.18), y: Math.round(y2 - h * 0.03) },
-    { x: Math.round(x1 + w * 0.03), y: Math.round(y2 - h * 0.18) },
-    { x: Math.round(x1 + w * 0.04), y: Math.round(y1 + h * 0.22) },
-  ];
+  const bx1 = Math.max(0, Math.floor(((box.x1 * scale + padX) / targetW) * protoW));
+  const by1 = Math.max(0, Math.floor(((box.y1 * scale + padY) / targetH) * protoH));
+  const bx2 = Math.min(protoW - 1, Math.ceil(((box.x2 * scale + padX) / targetW) * protoW));
+  const by2 = Math.min(protoH - 1, Math.ceil(((box.y2 * scale + padY) / targetH) * protoH));
+
+  const boundaryPts: Array<{ x: number; y: number }> = [];
+  const mhArea = protoH * protoW;
+
+  for (let my = by1; my <= by2; my++) {
+    let rowLeft = -1;
+    let rowRight = -1;
+    for (let mx = bx1; mx <= bx2; mx++) {
+      let sum = 0;
+      for (let k = 0; k < protoC; k++) {
+        sum += maskCoeffs[k] * protoData[k * mhArea + my * protoW + mx];
+      }
+      if (sigmoid(sum) > 0.5) {
+        if (rowLeft === -1) rowLeft = mx;
+        rowRight = mx;
+      }
+    }
+    if (rowLeft !== -1) {
+      const ixLeft = Math.round(((rowLeft / protoW) * targetW - padX) / scale);
+      const iy = Math.round(((my / protoH) * targetH - padY) / scale);
+      boundaryPts.push({ x: ixLeft, y: iy });
+    }
+  }
+
+  // Right edge bottom-to-top to form closed contour
+  for (let my = by2; my >= by1; my--) {
+    let rowRight = -1;
+    for (let mx = bx2; mx >= bx1; mx--) {
+      let sum = 0;
+      for (let k = 0; k < protoC; k++) {
+        sum += maskCoeffs[k] * protoData[k * mhArea + my * protoW + mx];
+      }
+      if (sigmoid(sum) > 0.5) {
+        rowRight = mx;
+        break;
+      }
+    }
+    if (rowRight !== -1) {
+      const ixRight = Math.round(((rowRight / protoW) * targetW - padX) / scale);
+      const iy = Math.round(((my / protoH) * targetH - padY) / scale);
+      boundaryPts.push({ x: ixRight, y: iy });
+    }
+  }
+
+  if (boundaryPts.length <= 24) return boundaryPts;
+  const step = Math.ceil(boundaryPts.length / 24);
+  return boundaryPts.filter((_, idx) => idx % step === 0);
 }
 
-function buildPoseKeypoints(
-  x1: number,
-  y1: number,
-  x2: number,
-  y2: number
-): Array<{ x: number; y: number; confidence: number; name: string }> {
-  const w = x2 - x1;
-  const h = y2 - y1;
-  const template: Array<[number, number, number]> = [
-    [0.5, 0.1, 0.96],   // nose
-    [0.45, 0.08, 0.94], // l_eye
-    [0.55, 0.08, 0.94], // r_eye
-    [0.41, 0.1, 0.88],  // l_ear
-    [0.59, 0.1, 0.88],  // r_ear
-    [0.32, 0.25, 0.95], // l_shoulder
-    [0.68, 0.25, 0.95], // r_shoulder
-    [0.24, 0.42, 0.91], // l_elbow
-    [0.76, 0.42, 0.91], // r_elbow
-    [0.2, 0.56, 0.87],  // l_wrist
-    [0.8, 0.56, 0.87],  // r_wrist
-    [0.38, 0.55, 0.94], // l_hip
-    [0.62, 0.55, 0.94], // r_hip
-    [0.36, 0.76, 0.92], // l_knee
-    [0.64, 0.76, 0.92], // r_knee
-    [0.35, 0.95, 0.89], // l_ankle
-    [0.65, 0.95, 0.89], // r_ankle
-  ];
-  return template.map(([rx, ry, conf], idx) => ({
-    x: Math.round(x1 + w * rx),
-    y: Math.round(y1 + h * ry),
-    confidence: conf,
-    name: COCO_KEYPOINT_NAMES[idx],
-  }));
-}
+export async function runYoloInference(options: {
+  imageBuffer: Buffer;
+  model: ModelRecord;
+  confidence: number;
+  iou: number;
+}): Promise<YoloInferenceResult> {
+  const { imageBuffer, model, confidence, iou } = options;
 
-async function runRealOnnxYolo(
-  imageBuffer: Buffer,
-  model: ModelRecord,
-  confidenceThreshold: number,
-  iouThreshold: number
-): Promise<YoloInferenceResult> {
+  if (model.format !== 'onnx') {
+    throw new Error(
+      `Model "${model.name}" is in PyTorch (.pt) format. Export it to ONNX (.onnx) to execute inference on the local CPU ONNX Runtime engine.`
+    );
+  }
+
+  try {
+    await fs.access(model.storagePath);
+  } catch {
+    throw new Error(
+      `Model file not found on disk at "${model.storagePath}". Re-upload the .onnx model in the Model Registry.`
+    );
+  }
+
   const start = Date.now();
   const meta = await sharp(imageBuffer).metadata();
   const origW = meta.width ?? 640;
@@ -203,18 +235,30 @@ async function runRealOnnxYolo(
   const outData = firstOut.data as Float32Array;
   const classNames = model.classNames;
 
-  const rawBoxes: DetectionPrediction[] = [];
+  const protoOut =
+    session.outputNames.length >= 2 ? outputs[session.outputNames[1]] : null;
+
+  interface CandidateWithMask {
+    pred: DetectionPrediction;
+    maskCoeffs?: number[];
+  }
+  const candidates: CandidateWithMask[] = [];
 
   if (outDims.length === 3) {
     const dim1 = Number(outDims[1]);
     const dim2 = Number(outDims[2]);
 
-    // YOLOv8/v11 format: [1, 4 + num_classes (+ extra), num_anchors] where dim1 < dim2
+    // YOLOv8/v11 format: [1, 4 + num_classes (+ extra), num_anchors]
     if (dim1 < dim2) {
       const numChannels = dim1;
       const numAnchors = dim2;
-      const extraChannels = model.task === 'segment' ? 32 : model.task === 'pose' ? 51 : 0;
-      const numClasses = Math.max(1, Math.min(classNames.length, numChannels - 4 - extraChannels));
+      const hasSegProto = Boolean(protoOut && protoOut.dims.length === 4);
+      const segChannels = hasSegProto ? Number(protoOut!.dims[1]) : 0;
+      const poseChannels = model.task === 'pose' && numChannels >= 56 ? 51 : 0;
+      const numClasses = Math.max(
+        1,
+        Math.min(classNames.length, numChannels - 4 - segChannels - poseChannels)
+      );
 
       for (let a = 0; a < numAnchors; a++) {
         let bestScore = 0;
@@ -226,7 +270,7 @@ async function runRealOnnxYolo(
             bestCls = c;
           }
         }
-        if (bestScore < confidenceThreshold) continue;
+        if (bestScore < confidence) continue;
 
         const cx = outData[0 * numAnchors + a];
         const cy = outData[1 * numAnchors + a];
@@ -253,14 +297,26 @@ async function runRealOnnxYolo(
           x2: Math.round(x2),
           y2: Math.round(y2),
         };
-        if (model.task === 'segment') {
-          pred.points = buildPolygonAroundBox(pred.x1, pred.y1, pred.x2, pred.y2);
-        } else if (model.task === 'pose') {
-          const kpts: Array<{ x: number; y: number; confidence: number; name: string }> = [];
+
+        let maskCoeffs: number[] | undefined;
+        if (hasSegProto && segChannels > 0) {
+          maskCoeffs = [];
+          const maskStart = 4 + numClasses;
+          for (let m = 0; m < segChannels && maskStart + m < numChannels; m++) {
+            maskCoeffs.push(outData[(maskStart + m) * numAnchors + a]);
+          }
+        } else if (poseChannels === 51) {
+          const kpts: Array<{
+            x: number;
+            y: number;
+            confidence: number;
+            name: string;
+          }> = [];
           const kptStart = 4 + numClasses;
           for (let k = 0; k < 17 && kptStart + k * 3 + 2 < numChannels; k++) {
             const kx = (outData[(kptStart + k * 3) * numAnchors + a] - padX) / scale;
-            const ky = (outData[(kptStart + k * 3 + 1) * numAnchors + a] - padY) / scale;
+            const ky =
+              (outData[(kptStart + k * 3 + 1) * numAnchors + a] - padY) / scale;
             const kc = outData[(kptStart + k * 3 + 2) * numAnchors + a];
             kpts.push({
               x: Math.round(Math.max(0, Math.min(origW, kx))),
@@ -269,9 +325,10 @@ async function runRealOnnxYolo(
               name: COCO_KEYPOINT_NAMES[k] ?? `kpt_${k}`,
             });
           }
-          pred.keypoints = kpts.length === 17 ? kpts : buildPoseKeypoints(pred.x1, pred.y1, pred.x2, pred.y2);
+          pred.keypoints = kpts;
         }
-        rawBoxes.push(pred);
+
+        candidates.push({ pred, maskCoeffs });
       }
     } else {
       // YOLOv5/v10 transposed format: [1, num_anchors, 5 + num_classes]
@@ -290,7 +347,7 @@ async function runRealOnnxYolo(
             bestCls = c - clsStart;
           }
         }
-        if (bestClsScore < confidenceThreshold) continue;
+        if (bestClsScore < confidence) continue;
         const cx = outData[base];
         const cy = outData[base + 1];
         const bw = outData[base + 2];
@@ -300,25 +357,59 @@ async function runRealOnnxYolo(
         const x2 = Math.min(origW, (cx + bw / 2 - padX) / scale);
         const y2 = Math.min(origH, (cy + bh / 2 - padY) / scale);
         if (x2 <= x1 || y2 <= y1) continue;
-        rawBoxes.push({
-          detection_id: crypto.randomUUID().slice(0, 8),
-          class: classNames[bestCls] ?? `class_${bestCls}`,
-          class_id: bestCls,
-          confidence: Number(bestClsScore.toFixed(4)),
-          x: Math.round((x1 + x2) / 2),
-          y: Math.round((y1 + y2) / 2),
-          width: Math.round(x2 - x1),
-          height: Math.round(y2 - y1),
-          x1: Math.round(x1),
-          y1: Math.round(y1),
-          x2: Math.round(x2),
-          y2: Math.round(y2),
+        candidates.push({
+          pred: {
+            detection_id: crypto.randomUUID().slice(0, 8),
+            class: classNames[bestCls] ?? `class_${bestCls}`,
+            class_id: bestCls,
+            confidence: Number(bestClsScore.toFixed(4)),
+            x: Math.round((x1 + x2) / 2),
+            y: Math.round((y1 + y2) / 2),
+            width: Math.round(x2 - x1),
+            height: Math.round(y2 - y1),
+            x1: Math.round(x1),
+            y1: Math.round(y1),
+            x2: Math.round(x2),
+            y2: Math.round(y2),
+          },
         });
       }
     }
   }
 
-  const predictions = nonMaxSuppression(rawBoxes, iouThreshold).slice(0, 100);
+  const keptPreds = nonMaxSuppression(
+    candidates.map((c) => c.pred),
+    iou
+  ).slice(0, 100);
+
+  // Decode segmentation mask polygons only for surviving NMS detections
+  if (protoOut && protoOut.dims.length === 4) {
+    const protoC = Number(protoOut.dims[1]);
+    const protoH = Number(protoOut.dims[2]);
+    const protoW = Number(protoOut.dims[3]);
+    const protoData = protoOut.data as Float32Array;
+    const coeffById = new Map(
+      candidates.map((c) => [c.pred.detection_id, c.maskCoeffs])
+    );
+    for (const p of keptPreds) {
+      const coeffs = coeffById.get(p.detection_id);
+      if (coeffs && coeffs.length === protoC) {
+        p.points = extractMaskPolygonFromPrototypes(
+          coeffs,
+          protoData,
+          protoC,
+          protoH,
+          protoW,
+          p,
+          targetW,
+          targetH,
+          padX,
+          padY,
+          scale
+        );
+      }
+    }
+  }
 
   return {
     inference_id: crypto.randomUUID().slice(0, 12),
@@ -326,187 +417,9 @@ async function runRealOnnxYolo(
     task: model.task,
     engine: 'onnxruntime-node',
     image: { width: origW, height: origH },
-    predictions,
+    predictions: keptPreds,
     durationMs: Date.now() - start,
   };
-}
-
-/**
- * Local CV region analyzer for built-in demo presets or .pt models when PyTorch isn't installed.
- * Analyzes image color/contrast grid + recognizes sample scenes cleanly.
- */
-async function runFallbackVisionAnalyzer(
-  imageBuffer: Buffer,
-  model: ModelRecord,
-  confidenceThreshold: number,
-  iouThreshold: number,
-  sceneHint?: string
-): Promise<YoloInferenceResult> {
-  const start = Date.now();
-  const meta = await sharp(imageBuffer).metadata();
-  const width = meta.width ?? 1200;
-  const height = meta.height ?? 900;
-
-  const classNames = model.classNames.length > 0 ? model.classNames : ['object'];
-  const candidates: Array<{
-    cls: string;
-    conf: number;
-    rx1: number;
-    ry1: number;
-    rx2: number;
-    ry2: number;
-  }> = [];
-
-  if (sceneHint === 'street_traffic') {
-    candidates.push(
-      { cls: 'car', conf: 0.94, rx1: 0.39, ry1: 0.56, rx2: 0.58, ry2: 0.72 },
-      { cls: 'car', conf: 0.91, rx1: 0.45, ry1: 0.49, rx2: 0.56, ry2: 0.57 },
-      { cls: 'car', conf: 0.89, rx1: 0.59, ry1: 0.49, rx2: 0.69, ry2: 0.58 },
-      { cls: 'car', conf: 0.87, rx1: 0.33, ry1: 0.49, rx2: 0.44, ry2: 0.57 },
-      { cls: 'person', conf: 0.93, rx1: 0.47, ry1: 0.64, rx2: 0.54, ry2: 0.85 },
-      { cls: 'person', conf: 0.91, rx1: 0.31, ry1: 0.62, rx2: 0.39, ry2: 0.83 },
-      { cls: 'person', conf: 0.90, rx1: 0.24, ry1: 0.58, rx2: 0.31, ry2: 0.81 },
-      { cls: 'person', conf: 0.88, rx1: 0.56, ry1: 0.64, rx2: 0.62, ry2: 0.84 },
-      { cls: 'person', conf: 0.86, rx1: 0.68, ry1: 0.64, rx2: 0.74, ry2: 0.84 },
-      { cls: 'person', conf: 0.85, rx1: 0.77, ry1: 0.62, rx2: 0.84, ry2: 0.86 },
-      { cls: 'person', conf: 0.84, rx1: 0.08, ry1: 0.60, rx2: 0.16, ry2: 0.82 },
-      { cls: 'traffic light', conf: 0.92, rx1: 0.31, ry1: 0.13, rx2: 0.39, ry2: 0.25 },
-      { cls: 'bus', conf: 0.88, rx1: 0.60, ry1: 0.41, rx2: 0.68, ry2: 0.50 }
-    );
-  } else if (sceneHint === 'warehouse_logistics') {
-    candidates.push(
-      { cls: 'truck', conf: 0.93, rx1: 0.26, ry1: 0.32, rx2: 0.64, ry2: 0.88 },
-      { cls: 'person', conf: 0.95, rx1: 0.72, ry1: 0.42, rx2: 0.84, ry2: 0.90 },
-      { cls: 'person', conf: 0.91, rx1: 0.45, ry1: 0.39, rx2: 0.57, ry2: 0.73 },
-      { cls: 'suitcase', conf: 0.82, rx1: 0.10, ry1: 0.61, rx2: 0.38, ry2: 0.90 },
-      { cls: 'chair', conf: 0.68, rx1: 0.88, ry1: 0.50, rx2: 0.99, ry2: 0.74 }
-    );
-  } else {
-    // Analyze actual 8x8 luminance/edge energy regions from the uploaded image!
-    const grid = 8;
-    const { data } = await sharp(imageBuffer)
-      .resize(grid * 4, grid * 4, { fit: 'fill' })
-      .grayscale()
-      .raw()
-      .toBuffer({ resolveWithObject: true });
-
-    const blockEnergies: Array<{ gx: number; gy: number; variance: number }> = [];
-    const stride = grid * 4;
-    for (let gy = 1; gy < grid - 1; gy++) {
-      for (let gx = 1; gx < grid - 1; gx++) {
-        let sum = 0;
-        let sumSq = 0;
-        for (let dy = 0; dy < 4; dy++) {
-          for (let dx = 0; dx < 4; dx++) {
-            const val = data[(gy * 4 + dy) * stride + (gx * 4 + dx)];
-            sum += val;
-            sumSq += val * val;
-          }
-        }
-        const mean = sum / 16;
-        const variance = sumSq / 16 - mean * mean;
-        blockEnergies.push({ gx, gy, variance });
-      }
-    }
-    blockEnergies.sort((a, b) => b.variance - a.variance);
-    const topRegions = blockEnergies.slice(0, 5);
-    topRegions.forEach((reg, idx) => {
-      const conf = Math.min(0.95, Math.max(0.45, 0.52 + reg.variance / 4500));
-      const rx1 = Math.max(0.05, reg.gx / grid - 0.1);
-      const ry1 = Math.max(0.05, reg.gy / grid - 0.1);
-      const rx2 = Math.min(0.95, reg.gx / grid + 0.18);
-      const ry2 = Math.min(0.95, reg.gy / grid + 0.24);
-      const clsIndex = idx % Math.min(classNames.length, 4);
-      candidates.push({
-        cls: classNames[clsIndex] ?? classNames[0],
-        conf,
-        rx1,
-        ry1,
-        rx2,
-        ry2,
-      });
-    });
-  }
-
-  const rawBoxes: DetectionPrediction[] = candidates
-    .map((c) => {
-      const clsName = classNames.includes(c.cls)
-        ? c.cls
-        : model.task === 'pose'
-          ? 'person'
-          : classNames[0];
-      const clsId = Math.max(0, classNames.indexOf(clsName));
-      const x1 = Math.round(c.rx1 * width);
-      const y1 = Math.round(c.ry1 * height);
-      const x2 = Math.round(c.rx2 * width);
-      const y2 = Math.round(c.ry2 * height);
-      const pred: DetectionPrediction = {
-        detection_id: crypto.randomUUID().slice(0, 8),
-        class: clsName,
-        class_id: clsId,
-        confidence: Number(c.conf.toFixed(3)),
-        x: Math.round((x1 + x2) / 2),
-        y: Math.round((y1 + y2) / 2),
-        width: Math.max(1, x2 - x1),
-        height: Math.max(1, y2 - y1),
-        x1,
-        y1,
-        x2,
-        y2,
-      };
-      if (model.task === 'segment') {
-        pred.points = buildPolygonAroundBox(x1, y1, x2, y2);
-      } else if (model.task === 'pose') {
-        pred.keypoints = buildPoseKeypoints(x1, y1, x2, y2);
-      }
-      return pred;
-    })
-    .filter((b) => b.confidence >= confidenceThreshold);
-
-  const predictions = nonMaxSuppression(rawBoxes, iouThreshold);
-
-  return {
-    inference_id: crypto.randomUUID().slice(0, 12),
-    model: model.name,
-    task: model.task,
-    engine: 'local-vision-analyzer',
-    image: { width, height },
-    predictions,
-    durationMs: Date.now() - start,
-  };
-}
-
-export async function runYoloInference(options: {
-  imageBuffer: Buffer;
-  model: ModelRecord;
-  confidence: number;
-  iou: number;
-  sceneHint?: string;
-}): Promise<YoloInferenceResult> {
-  const { imageBuffer, model, confidence, iou, sceneHint } = options;
-
-  if (
-    model.format === 'onnx' &&
-    !model.storagePath.startsWith('builtin://')
-  ) {
-    try {
-      await fs.access(model.storagePath);
-      return await runRealOnnxYolo(imageBuffer, model, confidence, iou);
-    } catch (err) {
-      console.warn(
-        `[YOLO Engine] Falling back from ONNX runtime for ${model.name}:`,
-        err instanceof Error ? err.message : err
-      );
-    }
-  }
-
-  return runFallbackVisionAnalyzer(
-    imageBuffer,
-    model,
-    confidence,
-    iou,
-    sceneHint
-  );
 }
 
 export interface AnnotationLayerOptions {
@@ -546,7 +459,6 @@ export async function renderAnnotatedImage(
 
   const svgParts: string[] = [];
 
-  // Optional zone / line overlay
   if (layers.zoneOverlay) {
     if (layers.zoneOverlay.mode === 'zone' && layers.zoneOverlay.zone) {
       const z = layers.zoneOverlay.zone;
@@ -615,7 +527,10 @@ export async function renderAnnotatedImage(
             : `${pred.class} ${confPct}`;
       const padX = 6;
       const boxH = fontSize + 8;
-      const boxW = Math.max(42, Math.round(text.length * (fontSize * 0.62) + padX * 2));
+      const boxW = Math.max(
+        42,
+        Math.round(text.length * (fontSize * 0.62) + padX * 2)
+      );
       const labelY = Math.max(0, pred.y1 - boxH);
       svgParts.push(
         `<rect x="${pred.x1}" y="${labelY}" width="${boxW}" height="${boxH}" rx="3" fill="${color}" />`

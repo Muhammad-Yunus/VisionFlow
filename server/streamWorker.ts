@@ -1,5 +1,3 @@
-import fs from 'node:fs/promises';
-import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { store, type StreamRecord } from './store.ts';
@@ -19,56 +17,42 @@ interface ActiveWorker {
 
 const activeWorkers = new Map<string, ActiveWorker>();
 
-async function captureRtspFrame(rtspUrl: string): Promise<{
-  buffer: Buffer;
-  sceneHint?: string;
-}> {
+async function captureRtspFrame(rtspUrl: string): Promise<Buffer> {
   const urlCheck = validateExternalUrl(rtspUrl, [
     'rtsp:',
     'rtsps:',
     'http:',
     'https:',
   ]);
-
-  if (urlCheck.valid) {
-    try {
-      const { stdout } = await execFileAsync(
-        'ffmpeg',
-        [
-          '-y',
-          '-rtsp_transport',
-          'tcp',
-          '-i',
-          urlCheck.url!.toString(),
-          '-frames:v',
-          '1',
-          '-f',
-          'image2pipe',
-          '-vcodec',
-          'mjpeg',
-          'pipe:1',
-        ],
-        { timeout: 4500, encoding: 'buffer', maxBuffer: 8 * 1024 * 1024 }
-      );
-      if (Buffer.isBuffer(stdout) && stdout.length > 500) {
-        return { buffer: stdout };
-      }
-    } catch {
-      // Fallback to local sample stream frames if external RTSP camera is unreachable
-    }
+  if (!urlCheck.valid || !urlCheck.url) {
+    throw new Error(urlCheck.error ?? 'Invalid stream URL.');
   }
 
-  // Alternate between the local street & warehouse sample images to simulate live frames
-  const useStreet = Math.floor(Date.now() / 3000) % 2 === 0;
-  const filename = useStreet
-    ? 'sample_street_traffic_1795359272502.jpg'
-    : 'sample_warehouse_logistics_1795359271625.jpg';
-  const samplePath = path.resolve(process.cwd(), 'src/assets/images', filename);
-  const buffer = await fs.readFile(samplePath);
-  return {
-    buffer,
-    sceneHint: useStreet ? 'street_traffic' : 'warehouse_logistics',
-  };
+  const { stdout } = await execFileAsync(
+    'ffmpeg',
+    [
+      '-y',
+      ...(urlCheck.url.protocol.startsWith('rtsp')
+        ? ['-rtsp_transport', 'tcp']
+        : []),
+      '-i',
+      urlCheck.url.toString(),
+      '-frames:v',
+      '1',
+      '-f',
+      'image2pipe',
+      '-vcodec',
+      'mjpeg',
+      'pipe:1',
+    ],
+    { timeout: 6000, encoding: 'buffer', maxBuffer: 8 * 1024 * 1024 }
+  );
+
+  if (!Buffer.isBuffer(stdout) || stdout.length < 100) {
+    throw new Error('ffmpeg produced empty frame from stream source.');
+  }
+
+  return stdout;
 }
 
 export async function startStreamWorker(stream: StreamRecord): Promise<void> {
@@ -88,7 +72,10 @@ export async function startStreamWorker(stream: StreamRecord): Promise<void> {
   await store.updateStreamStatus(stream.id, { status: 'running' });
 
   let frameCount = stream.framesProcessed ?? 0;
-  const intervalMs = Math.max(400, Math.round(1000 / Math.min(5, Math.max(0.2, stream.fpsTarget || 1))));
+  const intervalMs = Math.max(
+    400,
+    Math.round(1000 / Math.min(5, Math.max(0.2, stream.fpsTarget || 1)))
+  );
 
   const tick = async () => {
     if (!worker.running) return;
@@ -100,12 +87,11 @@ export async function startStreamWorker(stream: StreamRecord): Promise<void> {
         return;
       }
 
-      const { buffer, sceneHint } = await captureRtspFrame(latestStream.rtspUrl);
+      const buffer = await captureRtspFrame(latestStream.rtspUrl);
       const result = await executeWorkflowDag({
         definition: workflow.definition,
         imageBuffer: buffer,
         enableSinks: true,
-        sceneHint,
       });
 
       const base64Data = result.annotated_image_base64?.replace(
@@ -144,10 +130,12 @@ export async function startStreamWorker(stream: StreamRecord): Promise<void> {
         }
       }
     } catch (err) {
-      console.warn(
-        `[StreamWorker ${stream.id}] frame error:`,
-        err instanceof Error ? err.message : err
-      );
+      const message =
+        err instanceof Error ? err.message : 'Stream frame capture failed';
+      await store.updateStreamStatus(stream.id, {
+        status: 'error',
+        lastResult: { error: message, timestamp: new Date().toISOString() },
+      });
     } finally {
       if (worker.running) {
         worker.timer = setTimeout(tick, intervalMs);

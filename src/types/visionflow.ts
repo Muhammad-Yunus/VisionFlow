@@ -17,8 +17,17 @@ export interface ModelSummary {
   inputShape: number[];
   fileSizeBytes: number;
   createdAt: string;
-  isBuiltin?: boolean;
   extractionSource?: string;
+}
+
+export interface InferenceRunSummary {
+  id: string;
+  workflowId: string | null;
+  sourceType: string;
+  durationMs: number;
+  detectionCount: number;
+  resultSummary: Record<string, unknown>;
+  createdAt: string;
 }
 
 export interface WorkflowSummary {

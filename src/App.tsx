@@ -14,6 +14,7 @@ import {
   type OnNodesChange,
 } from '@xyflow/react';
 import {
+  AlertTriangle,
   Check,
   ChevronDown,
   Clock,
@@ -31,6 +32,7 @@ import {
   Play,
   Plus,
   Redo2,
+  RefreshCw,
   Save,
   Settings,
   Share2,
@@ -38,7 +40,6 @@ import {
   Undo2,
   Unlock,
   User,
-  X,
 } from 'lucide-react';
 import {
   createDefaultWorkflowDefinition,
@@ -52,6 +53,7 @@ import { api, setAuthToken } from './lib/api';
 import type {
   AuthUser,
   DagRunResult,
+  InferenceRunSummary,
   ModelSummary,
   RightPanelTab,
   StreamSummary,
@@ -69,6 +71,7 @@ import { WorkflowBlocksSidebar } from './components/WorkflowBlocksSidebar';
 import { RunWorkflowPanel } from './components/RunWorkflowPanel';
 import {
   AuthModal,
+  ExecutionHistoryModal,
   IntegrateApiModal,
   ModelRegistryModal,
   NodeJsonModal,
@@ -177,13 +180,12 @@ function VisionFlowWorkspace() {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [needsSetup, setNeedsSetup] = useState(false);
   const [databaseStatus, setDatabaseStatus] = useState('unconfigured');
+  const [dbError, setDbError] = useState<string | null>(null);
   const [authModalOpen, setAuthModalOpen] = useState(false);
 
   // Workflows & Models
   const [workflows, setWorkflows] = useState<WorkflowSummary[]>([]);
-  const [activeWorkflowId, setActiveWorkflowId] = useState<string>(
-    '00000000-0000-4000-8000-000000000001'
-  );
+  const [activeWorkflowId, setActiveWorkflowId] = useState<string>('');
   const [definition, setDefinition] = useState<WorkflowDefinition>(() =>
     createDefaultWorkflowDefinition()
   );
@@ -205,10 +207,14 @@ function VisionFlowWorkspace() {
   const [showMinimap, setShowMinimap] = useState(false);
   const [showSaveMenu, setShowSaveMenu] = useState(false);
 
-  // Modals
+  // Modals & History
   const [modelModalOpen, setModelModalOpen] = useState(false);
   const [integrateModalOpen, setIntegrateModalOpen] = useState(false);
   const [nodeJsonModalText, setNodeJsonModalText] = useState<string | null>(null);
+  const [historyModalOpen, setHistoryModalOpen] = useState(false);
+  const [workflowRuns, setWorkflowRuns] = useState<InferenceRunSummary[]>([]);
+  const [runsLoading, setRunsLoading] = useState(false);
+  const [runsError, setRunsError] = useState<string | null>(null);
   const [renamingWorkflow, setRenamingWorkflow] = useState(false);
   const [workflowNameDraft, setWorkflowNameDraft] = useState('');
 
@@ -217,9 +223,6 @@ function VisionFlowWorkspace() {
   const [showAllBlockOutputs, setShowAllBlockOutputs] = useState(false);
   const [useBlockCache, setUseBlockCache] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [selectedSampleId, setSelectedSampleId] = useState<string | null>(
-    'street_traffic'
-  );
   const [imageUrlInput, setImageUrlInput] = useState('');
   const [running, setRunning] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
@@ -232,28 +235,40 @@ function VisionFlowWorkspace() {
     setTimeout(() => setToastMessage(null), 2600);
   }, []);
 
-  // Load initial bootstrap, workflows, models, streams
+  // Load initial bootstrap, workflows, models, streams from PostgreSQL
   const loadInitialData = useCallback(async () => {
     try {
-      const [boot, wfRes, modelRes, streamRes] = await Promise.all([
-        api.getBootstrapStatus(),
+      const boot = await api.getBootstrapStatus();
+      setNeedsSetup(boot.needsSetup);
+      setDatabaseStatus(boot.databaseStatus);
+      if (boot.databaseStatus !== 'connected') {
+        setDbError(
+          'PostgreSQL is not connected. Configure DB_HOST, DB_PORT, DB_NAME, DB_USER, and DB_PASSWORD in Settings -> Secrets.'
+        );
+        return;
+      }
+      setDbError(null);
+
+      const [wfRes, modelRes, streamRes] = await Promise.all([
         api.listWorkflows(),
         api.listModels(),
         api.listStreams(),
       ]);
-      setNeedsSetup(boot.needsSetup);
-      setDatabaseStatus(boot.databaseStatus);
       setModels(modelRes.models);
       setStreams(streamRes.streams);
+      setWorkflows(wfRes.workflows);
       if (wfRes.workflows.length > 0) {
-        setWorkflows(wfRes.workflows);
         const first = wfRes.workflows[0];
         setActiveWorkflowId(first.id);
         setDefinition(first.definition);
         setSavedSnapshot(JSON.stringify(first.definition));
       }
     } catch (err) {
-      console.error('Failed loading initial workspace:', err);
+      setDbError(
+        err instanceof Error
+          ? err.message
+          : 'Failed to load workspace from PostgreSQL.'
+      );
     }
   }, []);
 
@@ -281,11 +296,30 @@ function VisionFlowWorkspace() {
       description: '',
       status: 'draft',
       definition,
-      apiKey: 'vf_preview_key',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      apiKey: '',
+      createdAt: '',
+      updatedAt: '',
     };
   }, [workflows, activeWorkflowId, definition]);
+
+  const loadWorkflowRuns = useCallback(async (wfId: string) => {
+    if (!wfId) {
+      setWorkflowRuns([]);
+      return;
+    }
+    setRunsLoading(true);
+    setRunsError(null);
+    try {
+      const res = await api.listWorkflowRuns(wfId);
+      setWorkflowRuns(res.runs);
+    } catch (err) {
+      setRunsError(
+        err instanceof Error ? err.message : 'Failed to load execution history'
+      );
+    } finally {
+      setRunsLoading(false);
+    }
+  }, []);
 
   const isDirty = useMemo(
     () => JSON.stringify(definition) !== savedSnapshot,
@@ -337,19 +371,13 @@ function VisionFlowWorkspace() {
       setRightPanelOpen(true);
       try {
         const res = await api.runWorkflow({
-          workflowId: activeWorkflow.id,
+          workflowId: activeWorkflow.id || undefined,
           definition,
           file: override?.imageBase64 ? undefined : selectedFile ?? undefined,
           imageBase64: override?.imageBase64,
           imageUrl:
             !override?.imageBase64 && !selectedFile && imageUrlInput.trim()
               ? imageUrlInput.trim()
-              : undefined,
-          sampleId:
-            !override?.imageBase64 &&
-            !selectedFile &&
-            !imageUrlInput.trim()
-              ? selectedSampleId ?? 'street_traffic'
               : undefined,
           sourceType: override?.sourceType ?? rightTab,
           enableSinks,
@@ -369,7 +397,6 @@ function VisionFlowWorkspace() {
       definition,
       selectedFile,
       imageUrlInput,
-      selectedSampleId,
       rightTab,
       enableSinks,
       showAllBlockOutputs,
@@ -617,6 +644,19 @@ function VisionFlowWorkspace() {
         return;
       }
 
+      const taskForKind: Record<string, ModelSummary['task']> = {
+        yolo_detection: 'detect',
+        yolo_segmentation: 'segment',
+        yolo_pose: 'pose',
+      };
+      const desiredTask = taskForKind[block.kind];
+      const matchedModel = desiredTask
+        ? models.find((m) => m.task === desiredTask && m.format === 'onnx') ??
+          models.find((m) => m.task === desiredTask) ??
+          models.find((m) => m.format === 'onnx') ??
+          models[0]
+        : undefined;
+
       commitDefinition((prev) => {
         const existingCount = prev.nodes.filter((n) => n.kind === block.kind).length;
         const uniqueName =
@@ -630,14 +670,22 @@ function VisionFlowWorkspace() {
           y: 260 + (prev.nodes.length % 4) * 55,
         };
 
+        const params = { ...block.defaultParams };
+        let subtitle = block.defaultSubtitle;
+        if (matchedModel) {
+          params.modelId = matchedModel.id;
+          params.modelName = matchedModel.name;
+          subtitle = matchedModel.name;
+        }
+
         const newNode: WorkflowNodeDef = {
           id: newId,
           kind: block.kind,
           name: uniqueName,
-          subtitle: block.defaultSubtitle,
+          subtitle,
           category: block.category,
           position: pos,
-          params: { ...block.defaultParams },
+          params,
         };
 
         return {
@@ -646,7 +694,7 @@ function VisionFlowWorkspace() {
         };
       });
     },
-    [commitDefinition, showToast]
+    [commitDefinition, models, showToast]
   );
 
   const handleAutoLayout = useCallback(() => {
@@ -964,6 +1012,27 @@ function VisionFlowWorkspace() {
         </div>
       </div>
 
+      {/* Real PostgreSQL Connection Status Banner (when unconfigured/unreachable) */}
+      {(dbError || databaseStatus !== 'connected') && (
+        <div className="shrink-0 bg-amber-50 border-b border-amber-200 px-4 py-2 flex items-center justify-between gap-3 text-[12px] text-amber-900">
+          <div className="flex items-center gap-2 min-w-0">
+            <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+            <span className="truncate">
+              {dbError ||
+                'PostgreSQL database not connected. Set DB_HOST, DB_PORT, DB_NAME, DB_USER, and DB_PASSWORD in Settings -> Secrets.'}
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => void loadInitialData()}
+            className="inline-flex items-center gap-1 rounded-md border border-amber-300 bg-white px-2.5 py-1 text-[11.5px] font-medium text-amber-900 hover:bg-amber-100 shrink-0"
+          >
+            <RefreshCw className="w-3 h-3" />
+            <span>Retry DB</span>
+          </button>
+        </div>
+      )}
+
       {/* Main 3-Column Workspace */}
       <div className="flex-1 flex min-h-0 relative overflow-hidden">
         {/* Center Node Canvas */}
@@ -1051,13 +1120,8 @@ function VisionFlowWorkspace() {
               <button
                 type="button"
                 onClick={() => {
-                  if (lastResult) {
-                    showToast(
-                      `Last run: ${lastResult.detection_count} detections in ${lastResult.duration_ms}ms`
-                    );
-                  } else {
-                    showToast('Run the workflow to inspect execution history.');
-                  }
+                  setHistoryModalOpen(true);
+                  void loadWorkflowRuns(activeWorkflow.id);
                 }}
                 className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 shadow-xs hover:bg-slate-50"
                 title="Execution History"
@@ -1251,10 +1315,8 @@ function VisionFlowWorkspace() {
           useBlockCache={useBlockCache}
           onToggleUseBlockCache={setUseBlockCache}
           selectedFile={selectedFile}
-          selectedSampleId={selectedSampleId}
           imageUrlInput={imageUrlInput}
           onSelectFile={setSelectedFile}
-          onSelectSample={setSelectedSampleId}
           onChangeImageUrl={setImageUrlInput}
           onRunWithSource={handleRunWorkflow}
           streams={streams}
@@ -1369,6 +1431,15 @@ function VisionFlowWorkspace() {
       <NodeJsonModal
         nodeJson={nodeJsonModalText}
         onClose={() => setNodeJsonModalText(null)}
+      />
+
+      <ExecutionHistoryModal
+        open={historyModalOpen}
+        onClose={() => setHistoryModalOpen(false)}
+        runs={workflowRuns}
+        loading={runsLoading}
+        error={runsError}
+        onRefresh={() => void loadWorkflowRuns(activeWorkflow.id)}
       />
     </div>
   );

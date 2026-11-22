@@ -120,13 +120,25 @@ export const api = {
       { method: 'POST' }
     ),
 
+  listWorkflowRuns: (workflowId: string) =>
+    apiFetch<{
+      runs: Array<{
+        id: string;
+        workflowId: string | null;
+        sourceType: string;
+        durationMs: number;
+        detectionCount: number;
+        resultSummary: Record<string, unknown>;
+        createdAt: string;
+      }>;
+    }>(`/api/workflows/${encodeURIComponent(workflowId)}/runs`),
+
   runWorkflow: (payload: {
     workflowId?: string;
     definition: WorkflowDefinition;
     file?: File;
     imageBase64?: string;
     imageUrl?: string;
-    sampleId?: string;
     sourceType?: string;
     enableSinks?: boolean;
     showAllBlockOutputs?: boolean;

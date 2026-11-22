@@ -3,7 +3,6 @@ import {
   Camera,
   Check,
   Copy,
-  FileImage,
   Globe,
   Info,
   Link2,
@@ -27,19 +26,6 @@ import type {
   StreamSummary,
 } from '../types/visionflow';
 
-const BUILTIN_SAMPLES = [
-  {
-    id: 'street_traffic',
-    label: 'Broadway Crosswalk (Traffic & Pedestrians)',
-    src: '/src/assets/images/sample_street_traffic_1795359272502.jpg',
-  },
-  {
-    id: 'warehouse_logistics',
-    label: 'Warehouse Forklift & Safety PPE',
-    src: '/src/assets/images/sample_warehouse_logistics_1795359271625.jpg',
-  },
-];
-
 interface RunWorkflowPanelProps {
   open: boolean;
   onClose: () => void;
@@ -58,10 +44,8 @@ interface RunWorkflowPanelProps {
   useBlockCache: boolean;
   onToggleUseBlockCache: (v: boolean) => void;
   selectedFile: File | null;
-  selectedSampleId: string | null;
   imageUrlInput: string;
   onSelectFile: (file: File | null) => void;
-  onSelectSample: (sampleId: string | null) => void;
   onChangeImageUrl: (url: string) => void;
   onRunWithSource: (override?: {
     imageBase64?: string;
@@ -100,10 +84,8 @@ export function RunWorkflowPanel(props: RunWorkflowPanelProps) {
     useBlockCache,
     onToggleUseBlockCache,
     selectedFile,
-    selectedSampleId,
     imageUrlInput,
     onSelectFile,
-    onSelectSample,
     onChangeImageUrl,
     onRunWithSource,
     streams,
@@ -117,7 +99,6 @@ export function RunWorkflowPanel(props: RunWorkflowPanelProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const webcamStreamRef = useRef<MediaStream | null>(null);
 
-  const [showAssets, setShowAssets] = useState(false);
   const [showUrlBox, setShowUrlBox] = useState(false);
   const [previewDataUrl, setPreviewDataUrl] = useState<string | null>(null);
   const [copiedJson, setCopiedJson] = useState(false);
@@ -128,11 +109,13 @@ export function RunWorkflowPanel(props: RunWorkflowPanelProps) {
   const [webcamError, setWebcamError] = useState<string | null>(null);
   const [webcamAutoLoop, setWebcamAutoLoop] = useState(false);
 
-  // Stream creation state
+  // Stream creation state (no hardcoded placeholder values submitted)
   const [showAddStream, setShowAddStream] = useState(false);
-  const [streamName, setStreamName] = useState('Warehouse Gate Cam 01');
-  const [rtspUrl, setRtspUrl] = useState('rtsp://demo-camera.example.com:554/stream1');
-  const [streamSink, setStreamSink] = useState<'mjpeg' | 'webhook' | 'mqtt' | 'modbus'>('mjpeg');
+  const [streamName, setStreamName] = useState('');
+  const [rtspUrl, setRtspUrl] = useState('');
+  const [streamSink, setStreamSink] = useState<
+    'mjpeg' | 'webhook' | 'mqtt' | 'modbus'
+  >('mjpeg');
   const [streamFps, setStreamFps] = useState(1);
   const [streamCreating, setStreamCreating] = useState(false);
   const [streamFormError, setStreamFormError] = useState<string | null>(null);
@@ -142,17 +125,13 @@ export function RunWorkflowPanel(props: RunWorkflowPanelProps) {
       const reader = new FileReader();
       reader.onload = () => setPreviewDataUrl(String(reader.result));
       reader.readAsDataURL(selectedFile);
-    } else if (selectedSampleId) {
-      const found = BUILTIN_SAMPLES.find((s) => s.id === selectedSampleId);
-      setPreviewDataUrl(found ? found.src : null);
     } else if (imageUrlInput.trim()) {
       setPreviewDataUrl(imageUrlInput.trim());
     } else {
       setPreviewDataUrl(null);
     }
-  }, [selectedFile, selectedSampleId, imageUrlInput]);
+  }, [selectedFile, imageUrlInput]);
 
-  // Stop webcam when switching tabs
   useEffect(() => {
     if (activeTab !== 'webcam' && webcamStreamRef.current) {
       webcamStreamRef.current.getTracks().forEach((t) => t.stop());
@@ -224,12 +203,14 @@ export function RunWorkflowPanel(props: RunWorkflowPanelProps) {
     setStreamFormError(null);
     try {
       await onCreateStream({
-        name: streamName,
-        rtspUrl,
+        name: streamName.trim(),
+        rtspUrl: rtspUrl.trim(),
         sourceType: 'rtsp',
         sinkType: streamSink,
         fpsTarget: streamFps,
       });
+      setStreamName('');
+      setRtspUrl('');
       setShowAddStream(false);
     } catch (err) {
       setStreamFormError(
@@ -353,26 +334,24 @@ export function RunWorkflowPanel(props: RunWorkflowPanelProps) {
               <input
                 ref={fileInputRef}
                 type="file"
-                accept="image/png,image/jpeg,image/webp,video/mp4,video/quicktime"
+                accept="image/png,image/jpeg,image/webp"
                 className="hidden"
                 onChange={(e) => {
                   const file = e.target.files?.[0] ?? null;
                   if (file) {
-                    onSelectSample(null);
                     onChangeImageUrl('');
                     onSelectFile(file);
                   }
                 }}
               />
 
-              {/* Dashed Purple Dropzone matching Reference Screenshots */}
+              {/* Dashed Purple Dropzone */}
               <div
                 onDragOver={(e) => e.preventDefault()}
                 onDrop={(e) => {
                   e.preventDefault();
                   const file = e.dataTransfer.files?.[0];
                   if (file) {
-                    onSelectSample(null);
                     onChangeImageUrl('');
                     onSelectFile(file);
                   }
@@ -391,7 +370,6 @@ export function RunWorkflowPanel(props: RunWorkflowPanelProps) {
                       type="button"
                       onClick={() => {
                         onSelectFile(null);
-                        onSelectSample(null);
                         onChangeImageUrl('');
                       }}
                       className="absolute top-2 right-2 rounded-full bg-white/90 p-1 text-slate-700 shadow hover:bg-white"
@@ -413,7 +391,7 @@ export function RunWorkflowPanel(props: RunWorkflowPanelProps) {
                       Drag or Drop a File
                     </div>
                     <div className="mt-1 text-[11px] font-medium text-slate-500">
-                      PNG · JPG · WEBP · MP4 · MOV
+                      PNG · JPG · WEBP
                     </div>
                   </button>
                 )}
@@ -421,11 +399,11 @@ export function RunWorkflowPanel(props: RunWorkflowPanelProps) {
                 <div className="grid grid-cols-2 border-t border-violet-200/70 bg-white divide-x divide-slate-200">
                   <button
                     type="button"
-                    onClick={() => setShowAssets((v) => !v)}
+                    onClick={() => fileInputRef.current?.click()}
                     className="flex items-center justify-center gap-1.5 py-2.5 text-[11.5px] font-medium text-[#7c3aed] hover:bg-violet-50/50 transition"
                   >
-                    <FileImage className="w-3.5 h-3.5" />
-                    <span>Asset Library</span>
+                    <Upload className="w-3.5 h-3.5" />
+                    <span>Browse File</span>
                   </button>
                   <button
                     type="button"
@@ -438,52 +416,6 @@ export function RunWorkflowPanel(props: RunWorkflowPanelProps) {
                 </div>
               </div>
 
-              {showAssets && (
-                <div className="rounded-xl border border-slate-200 bg-slate-50 p-2.5 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[11.5px] font-semibold text-slate-800">
-                      Sample Test Assets
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => setShowAssets(false)}
-                      className="text-slate-400 hover:text-slate-700"
-                    >
-                      <X className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    {BUILTIN_SAMPLES.map((sample) => (
-                      <button
-                        key={sample.id}
-                        type="button"
-                        onClick={() => {
-                          onSelectFile(null);
-                          onChangeImageUrl('');
-                          onSelectSample(sample.id);
-                          setShowAssets(false);
-                        }}
-                        className={`rounded-lg border overflow-hidden text-left transition ${
-                          selectedSampleId === sample.id
-                            ? 'border-violet-500 ring-2 ring-violet-200'
-                            : 'border-slate-200 bg-white hover:border-slate-300'
-                        }`}
-                      >
-                        <img
-                          src={sample.src}
-                          alt={sample.label}
-                          referrerPolicy="no-referrer"
-                          className="h-20 w-full object-cover"
-                        />
-                        <div className="p-1.5 text-[10.5px] font-medium text-slate-700 truncate">
-                          {sample.label}
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-
               {showUrlBox && (
                 <div className="rounded-xl border border-slate-200 bg-slate-50 p-2.5 space-y-1.5">
                   <label className="text-[11px] font-semibold text-slate-700">
@@ -494,7 +426,6 @@ export function RunWorkflowPanel(props: RunWorkflowPanelProps) {
                     value={imageUrlInput}
                     onChange={(e) => {
                       onSelectFile(null);
-                      onSelectSample(null);
                       onChangeImageUrl(e.target.value);
                     }}
                     placeholder="https://..."
@@ -615,6 +546,7 @@ export function RunWorkflowPanel(props: RunWorkflowPanelProps) {
                       required
                       value={streamName}
                       onChange={(e) => setStreamName(e.target.value)}
+                      placeholder="e.g. Gate Camera 01"
                       className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[12px]"
                     />
                   </div>
@@ -627,7 +559,7 @@ export function RunWorkflowPanel(props: RunWorkflowPanelProps) {
                       required
                       value={rtspUrl}
                       onChange={(e) => setRtspUrl(e.target.value)}
-                      placeholder="rtsp://camera-host:554/live"
+                      placeholder="rtsp://camera-host:554/stream1"
                       className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[12px] font-mono"
                     />
                   </div>
@@ -723,6 +655,11 @@ export function RunWorkflowPanel(props: RunWorkflowPanelProps) {
                 <div className="space-y-2.5">
                   {streams.map((st) => {
                     const isRunning = st.status === 'running';
+                    const isError = st.status === 'error';
+                    const lastErr =
+                      st.lastResult && typeof st.lastResult.error === 'string'
+                        ? st.lastResult.error
+                        : null;
                     return (
                       <div
                         key={st.id}
@@ -741,12 +678,20 @@ export function RunWorkflowPanel(props: RunWorkflowPanelProps) {
                             className={`text-[10.5px] font-semibold px-2 py-0.5 rounded ${
                               isRunning
                                 ? 'bg-emerald-50 text-emerald-700'
-                                : 'bg-slate-100 text-slate-600'
+                                : isError
+                                  ? 'bg-rose-50 text-rose-700'
+                                  : 'bg-slate-100 text-slate-600'
                             }`}
                           >
-                            {isRunning ? 'Running' : 'Stopped'}
+                            {isRunning ? 'Running' : isError ? 'Error' : 'Stopped'}
                           </span>
                         </div>
+
+                        {lastErr && (
+                          <div className="text-[11px] text-rose-600 bg-rose-50 rounded px-2 py-1">
+                            {lastErr}
+                          </div>
+                        )}
 
                         {isRunning && (
                           <div className="rounded-lg overflow-hidden border border-slate-200 bg-slate-950">
@@ -806,7 +751,6 @@ export function RunWorkflowPanel(props: RunWorkflowPanelProps) {
             </div>
           )}
 
-          {/* Live Execution Output Summary + JSON Inspector */}
           {lastResult && (
             <div className="rounded-xl border border-slate-200 bg-slate-50/60 overflow-hidden">
               <div className="flex items-center justify-between px-3 py-2 border-b border-slate-200 bg-white">

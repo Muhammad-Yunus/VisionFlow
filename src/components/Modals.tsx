@@ -6,15 +6,22 @@ import {
   Cpu,
   Database,
   FileCode2,
+  History,
   KeyRound,
   Lock,
   Play,
+  RefreshCw,
   Trash2,
   Upload,
   X,
 } from 'lucide-react';
 import type { WorkflowDefinition } from '../shared/workflowSchema';
-import type { AuthUser, ModelSummary, WorkflowSummary } from '../types/visionflow';
+import type {
+  AuthUser,
+  InferenceRunSummary,
+  ModelSummary,
+  WorkflowSummary,
+} from '../types/visionflow';
 
 /* ---------------- Model Registry Modal ---------------- */
 export function ModelRegistryModal({
@@ -162,8 +169,10 @@ export function ModelRegistryModal({
                     </div>
                     <div className="text-[11.5px] text-slate-500 tabular-nums mt-0.5">
                       {model.classNames.length} classes extracted ·{' '}
-                      {(model.fileSizeBytes / (1024 * 1024)).toFixed(1)} MB
-                      {model.isBuiltin ? ' · Built-in preset' : ''}
+                      {(model.fileSizeBytes / (1024 * 1024)).toFixed(1)} MB ·{' '}
+                      {model.format === 'onnx'
+                        ? 'ONNX Runtime ready'
+                        : 'Metadata only (export to .onnx for CPU inference)'}
                     </div>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
@@ -177,16 +186,14 @@ export function ModelRegistryModal({
                     >
                       Use in Workflow
                     </button>
-                    {!model.isBuiltin && (
-                      <button
-                        type="button"
-                        onClick={() => void onDeleteModel(model.id)}
-                        className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600"
-                        title="Delete model"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    )}
+                    <button
+                      type="button"
+                      onClick={() => void onDeleteModel(model.id)}
+                      className="rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600"
+                      title="Delete model"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
                   </div>
                 </div>
                 <div className="text-[11px] font-mono text-slate-600 bg-slate-50 rounded-lg px-2.5 py-1.5 border border-slate-100 truncate">
@@ -327,17 +334,19 @@ console.log(result.outputs);`,
                 Workflow API Key (X-API-Key)
               </div>
               <div className="font-mono text-[12.5px] text-slate-900 truncate mt-0.5">
-                {workflow.apiKey}
+                {workflow.apiKey || 'Save workflow to PostgreSQL to generate API key'}
               </div>
             </div>
             <button
               type="button"
+              disabled={!workflow.apiKey}
               onClick={() => {
+                if (!workflow.apiKey) return;
                 void navigator.clipboard.writeText(workflow.apiKey);
                 setCopied(true);
                 setTimeout(() => setCopied(false), 1500);
               }}
-              className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11.5px] font-medium text-slate-700 hover:bg-slate-50 shrink-0"
+              className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11.5px] font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 shrink-0"
             >
               {copied ? (
                 <Check className="w-3.5 h-3.5 text-emerald-600" />
@@ -469,7 +478,7 @@ export function AuthModal({
                   PostgreSQL:{' '}
                   {databaseStatus === 'connected'
                     ? 'Connected (Drizzle ORM)'
-                    : 'Preview store (set DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD in Secrets)'}
+                    : 'Not connected — set DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD in Secrets'}
                 </span>
               </p>
             </div>
@@ -618,3 +627,115 @@ export function NodeJsonModal({
     </div>
   );
 }
+
+/* ---------------- Execution History Modal (PostgreSQL inference_runs) ---------------- */
+export function ExecutionHistoryModal({
+  open,
+  onClose,
+  runs,
+  loading,
+  error,
+  onRefresh,
+}: {
+  open: boolean;
+  onClose: () => void;
+  runs: InferenceRunSummary[];
+  loading: boolean;
+  error: string | null;
+  onRefresh: () => void;
+}) {
+  if (!open) return null;
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-2xl rounded-2xl border border-slate-200 bg-white shadow-2xl overflow-hidden flex flex-col max-h-[82vh]"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-200">
+          <div className="flex items-center gap-2.5">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#f3e8ff] text-[#7c3aed]">
+              <History className="w-4 h-4" />
+            </div>
+            <div>
+              <h3 className="font-display text-[15px] font-semibold text-slate-900">
+                Inference Execution History
+              </h3>
+              <p className="text-[12px] text-slate-500">
+                Recorded runs from PostgreSQL (inference_runs)
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={onRefresh}
+              className="rounded-lg p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+              title="Refresh runs"
+            >
+              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+
+        <div className="p-5 overflow-y-auto vf-scroll space-y-2.5">
+          {error && (
+            <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[12px] text-rose-700">
+              {error}
+            </div>
+          )}
+
+          {!error && !loading && runs.length === 0 && (
+            <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-10 text-center text-[12.5px] text-slate-500">
+              No inference runs recorded for this workflow yet. Run the workflow to log an execution.
+            </div>
+          )}
+
+          {runs.map((run) => {
+            const infId =
+              typeof run.resultSummary?.inference_id === 'string'
+                ? run.resultSummary.inference_id
+                : run.id;
+            return (
+              <div
+                key={run.id}
+                className="rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 flex items-center justify-between gap-3"
+              >
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="rounded bg-violet-50 px-1.5 py-0.5 text-[10.5px] font-semibold uppercase text-violet-700">
+                      {run.sourceType}
+                    </span>
+                    <span className="font-mono text-[11.5px] text-slate-800 truncate">
+                      {infId}
+                    </span>
+                  </div>
+                  <div className="mt-0.5 text-[11px] text-slate-500">
+                    {new Date(run.createdAt).toLocaleString()}
+                  </div>
+                </div>
+                <div className="flex items-center gap-3 text-[12px] font-mono tabular-nums shrink-0">
+                  <span className="font-semibold text-emerald-700">
+                    {run.detectionCount} det
+                  </span>
+                  <span className="text-slate-500">{run.durationMs}ms</span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+

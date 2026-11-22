@@ -16,7 +16,7 @@ import {
   validateExternalUrl,
   type AuthenticatedRequest,
 } from './server/auth.ts';
-import { store } from './server/store.ts';
+import { store, seedDatabaseDefaults } from './server/store.ts';
 import { inspectModelFile } from './server/modelInspector.ts';
 import { executeWorkflowDag } from './server/dagEngine.ts';
 import {
@@ -28,16 +28,6 @@ import type { WorkflowDefinition } from './src/shared/workflowSchema.ts';
 
 const PORT = 3000;
 const MODELS_DIR = path.resolve(process.cwd(), 'uploads', 'models');
-const SAMPLE_ASSETS: Record<string, { file: string; sceneHint: string }> = {
-  street_traffic: {
-    file: 'sample_street_traffic_1795359272502.jpg',
-    sceneHint: 'street_traffic',
-  },
-  warehouse_logistics: {
-    file: 'sample_warehouse_logistics_1795359271625.jpg',
-    sceneHint: 'warehouse_logistics',
-  },
-};
 
 const registerSchema = z.object({
   email: z.string().email().max(160),
@@ -82,23 +72,9 @@ async function resolveImageBufferFromRequest(opts: {
   fileBuffer?: Buffer;
   imageBase64?: string;
   imageUrl?: string;
-  sampleId?: string;
-}): Promise<{ buffer: Buffer; sceneHint?: string }> {
+}): Promise<Buffer> {
   if (opts.fileBuffer && opts.fileBuffer.length > 0) {
-    return { buffer: opts.fileBuffer };
-  }
-
-  if (opts.sampleId && SAMPLE_ASSETS[opts.sampleId]) {
-    const asset = SAMPLE_ASSETS[opts.sampleId];
-    const assetPath = path.resolve(
-      process.cwd(),
-      'src',
-      'assets',
-      'images',
-      asset.file
-    );
-    const buffer = await fs.readFile(assetPath);
-    return { buffer, sceneHint: asset.sceneHint };
+    return opts.fileBuffer;
   }
 
   if (opts.imageBase64 && opts.imageBase64.trim().length > 16) {
@@ -106,7 +82,7 @@ async function resolveImageBufferFromRequest(opts: {
     if (buffer.length === 0) {
       throw new Error('Invalid base64 image payload.');
     }
-    return { buffer };
+    return buffer;
   }
 
   if (opts.imageUrl && opts.imageUrl.trim().length > 0) {
@@ -121,16 +97,19 @@ async function resolveImageBufferFromRequest(opts: {
       throw new Error(`Failed to fetch image URL (HTTP ${resp.status}).`);
     }
     const arrayBuf = await resp.arrayBuffer();
-    return { buffer: Buffer.from(arrayBuf) };
+    return Buffer.from(arrayBuf);
   }
 
-  throw new Error('No input image provided. Upload a file, select an Asset Library image, or enter a URL.');
+  throw new Error('No input image provided. Upload an image file or enter a public HTTPS image URL.');
 }
 
 async function startServer() {
   await fs.mkdir(MODELS_DIR, { recursive: true });
   const dbInit = await initDatabase();
   console.log('[VisionFlow] Database status:', dbInit.status);
+  if (dbInit.connected) {
+    await seedDatabaseDefaults();
+  }
 
   const app = express();
   app.use(express.json({ limit: '25mb' }));
@@ -258,21 +237,26 @@ async function startServer() {
 
   // --- Model Registry Routes ---
   app.get('/api/models', optionalAuthMiddleware, async (req: AuthenticatedRequest, res) => {
-    const items = await store.listModels(req.user?.id);
-    res.json({
-      models: items.map((m) => ({
-        id: m.id,
-        name: m.name,
-        filename: m.filename,
-        format: m.format,
-        task: m.task,
-        classNames: m.classNames,
-        inputShape: m.inputShape,
-        fileSizeBytes: m.fileSizeBytes,
-        createdAt: m.createdAt,
-        isBuiltin: Boolean(m.isBuiltin),
-      })),
-    });
+    try {
+      const items = await store.listModels(req.user?.id);
+      res.json({
+        models: items.map((m) => ({
+          id: m.id,
+          name: m.name,
+          filename: m.filename,
+          format: m.format,
+          task: m.task,
+          classNames: m.classNames,
+          inputShape: m.inputShape,
+          fileSizeBytes: m.fileSizeBytes,
+          createdAt: m.createdAt,
+        })),
+      });
+    } catch (err) {
+      res.status(503).json({
+        error: err instanceof Error ? err.message : 'Database unavailable',
+      });
+    }
   });
 
   app.post(
@@ -352,21 +336,33 @@ async function startServer() {
 
   // --- Workflow CRUD & Deploy Routes ---
   app.get('/api/workflows', optionalAuthMiddleware, async (req: AuthenticatedRequest, res) => {
-    const items = await store.listWorkflows(req.user?.id);
-    res.json({ workflows: items });
+    try {
+      const items = await store.listWorkflows(req.user?.id);
+      res.json({ workflows: items });
+    } catch (err) {
+      res.status(503).json({
+        error: err instanceof Error ? err.message : 'Database unavailable',
+      });
+    }
   });
 
   app.get('/api/workflows/:id', optionalAuthMiddleware, async (req: AuthenticatedRequest, res) => {
-    const wf = await store.getWorkflowById(String(req.params.id));
-    if (!wf) {
-      res.status(404).json({ error: 'Workflow not found.' });
-      return;
+    try {
+      const wf = await store.getWorkflowById(String(req.params.id));
+      if (!wf) {
+        res.status(404).json({ error: 'Workflow not found.' });
+        return;
+      }
+      if (wf.userId && req.user?.id !== wf.userId) {
+        res.status(403).json({ error: 'Access denied.' });
+        return;
+      }
+      res.json({ workflow: wf });
+    } catch (err) {
+      res.status(503).json({
+        error: err instanceof Error ? err.message : 'Database unavailable',
+      });
     }
-    if (wf.userId && req.user?.id !== wf.userId) {
-      res.status(403).json({ error: 'Access denied.' });
-      return;
-    }
-    res.json({ workflow: wf });
   });
 
   app.post('/api/workflows', requireAuthMiddleware, async (req: AuthenticatedRequest, res) => {
@@ -419,8 +415,14 @@ async function startServer() {
   });
 
   app.get('/api/workflows/:id/runs', optionalAuthMiddleware, async (req, res) => {
-    const runs = await store.listInferenceRuns(String(req.params.id));
-    res.json({ runs });
+    try {
+      const runs = await store.listInferenceRuns(String(req.params.id));
+      res.json({ runs });
+    } catch (err) {
+      res.status(503).json({
+        error: err instanceof Error ? err.message : 'Database unavailable',
+      });
+    }
   });
 
   // --- Interactive Run & Test Endpoint (Right Panel) ---
@@ -442,11 +444,10 @@ async function startServer() {
           return;
         }
 
-        const { buffer, sceneHint } = await resolveImageBufferFromRequest({
+        const buffer = await resolveImageBufferFromRequest({
           fileBuffer: req.file?.buffer,
           imageBase64: req.body?.imageBase64,
           imageUrl: req.body?.imageUrl,
-          sampleId: req.body?.sampleId,
         });
 
         const enableSinks =
@@ -460,7 +461,6 @@ async function startServer() {
           imageBuffer: buffer,
           enableSinks,
           includeAllStepOutputs: showAllBlockOutputs,
-          sceneHint,
         });
 
         const workflowId =
@@ -515,11 +515,10 @@ async function startServer() {
           return;
         }
 
-        const { buffer, sceneHint } = await resolveImageBufferFromRequest({
+        const buffer = await resolveImageBufferFromRequest({
           fileBuffer: req.file?.buffer,
           imageBase64: req.body?.image ?? req.body?.imageBase64,
           imageUrl: req.body?.image_url ?? req.body?.imageUrl,
-          sampleId: req.body?.sampleId,
         });
 
         const result = await executeWorkflowDag({
@@ -527,7 +526,6 @@ async function startServer() {
           imageBuffer: buffer,
           enableSinks: req.body?.enableSinks !== false,
           includeAllStepOutputs: Boolean(req.body?.includeAllStepOutputs),
-          sceneHint,
         });
 
         await store.recordInferenceRun({
@@ -557,8 +555,14 @@ async function startServer() {
 
   // --- RTSP / Stream Background Workers ---
   app.get('/api/streams', optionalAuthMiddleware, async (req: AuthenticatedRequest, res) => {
-    const list = await store.listStreams(req.user?.id);
-    res.json({ streams: list });
+    try {
+      const list = await store.listStreams(req.user?.id);
+      res.json({ streams: list });
+    } catch (err) {
+      res.status(503).json({
+        error: err instanceof Error ? err.message : 'Database unavailable',
+      });
+    }
   });
 
   app.post('/api/streams', requireAuthMiddleware, async (req: AuthenticatedRequest, res) => {

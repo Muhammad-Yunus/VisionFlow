@@ -17,7 +17,6 @@ export interface DagExecutionOptions {
   imageBuffer: Buffer;
   enableSinks?: boolean;
   includeAllStepOutputs?: boolean;
-  sceneHint?: string;
 }
 
 export interface DagStepTrace {
@@ -140,7 +139,7 @@ export async function executeWorkflowDag(
 ): Promise<DagExecutionResult> {
   const totalStart = Date.now();
   const inferenceId = crypto.randomUUID().slice(0, 12);
-  const { definition, imageBuffer, enableSinks = true, includeAllStepOutputs = false, sceneHint } = options;
+  const { definition, imageBuffer, enableSinks = true, includeAllStepOutputs = false } = options;
 
   const orderedNodes = topologicalSortNodes(definition);
   const meta = await sharp(imageBuffer).metadata();
@@ -205,17 +204,22 @@ export async function executeWorkflowDag(
           baseImageSlot
         );
         const targetBuf = isImageSlot(imgVal) ? imgVal.buffer : imageBuffer;
-        const modelId = String(
-          node.params.modelId ??
-            (node.kind === 'yolo_segmentation'
-              ? 'builtin-yolov8s-seg'
-              : node.kind === 'yolo_pose'
-                ? 'builtin-yolov8n-pose'
-                : 'builtin-yolov8n-detect')
-        );
-        const model =
-          (await store.getModelById(modelId)) ??
-          (await store.getModelById('builtin-yolov8n-detect'))!;
+        const modelId = String(node.params.modelId ?? '');
+        let model = modelId ? await store.getModelById(modelId) : null;
+        if (!model) {
+          const allModels = await store.listModels();
+          const modelName = String(node.params.modelName ?? '');
+          model =
+            allModels.find((m) => m.name === modelName) ??
+            allModels.find((m) => m.format === 'onnx') ??
+            allModels[0] ??
+            null;
+        }
+        if (!model) {
+          throw new Error(
+            'No YOLO model registered in the database. Upload a .onnx model in the Model Registry first.'
+          );
+        }
 
         const confidence = Math.min(
           0.99,
@@ -231,7 +235,6 @@ export async function executeWorkflowDag(
           model,
           confidence,
           iou,
-          sceneHint,
         });
 
         let preds = yoloResult.predictions;

@@ -125,10 +125,13 @@ async function inspectOnnxModel(filePath: string): Promise<InspectedModelInfo> {
     }
   }
 
-  if (textSample.includes('segment') || textSample.includes('-seg')) {
+  const lowerFilename = path.basename(filePath).toLowerCase();
+  if (/task['"\s:=]+segment/.test(textSample) || /[-_]seg\.onnx$/i.test(lowerFilename)) {
     task = 'segment';
-  } else if (textSample.includes('pose') || textSample.includes('-pose')) {
+  } else if (/task['"\s:=]+pose/.test(textSample) || /[-_]pose\.onnx$/i.test(lowerFilename)) {
     task = 'pose';
+  } else if (/task['"\s:=]+detect/.test(textSample)) {
+    task = 'detect';
   }
 
   if (!extractedNames) {
